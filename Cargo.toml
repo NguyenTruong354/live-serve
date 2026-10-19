@@ -1,0 +1,28 @@
+[package]
+name = "live-serve"
+version = "0.1.0"
+edition = "2024"
+description = "A tiny static dev server that reloads the page when files change; works from the CLI, VS Code and Zed"
+license = "MIT"
+readme = "README.md"
+keywords = ["live-reload", "dev-server", "static", "http", "livereload"]
+categories = ["command-line-utilities", "development-tools", "web-programming::http-server"]
+exclude = ["/.github"]
+
+[dependencies]
+axum = { version = "0.8.9", features = ["ws"] }
+notify = "8.2.0"
+percent-encoding = "2.3.2"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time", "signal"] }
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.7.1", features = ["fs"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[dev-dependencies]
+serde_json = "1.0.154"
+
