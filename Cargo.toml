@@ -1,6 +1,6 @@
 [package]
 name = "live-serve"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 description = "A tiny static dev server that reloads the page when files change; works from the CLI, VS Code and Zed"
 license = "MIT"
@@ -9,7 +9,17 @@ repository = "https://github.com/NguyenTruong354/live-serve"
 homepage = "https://github.com/NguyenTruong354/live-serve"
 keywords = ["live-reload", "dev-server", "static", "http", "livereload"]
 categories = ["command-line-utilities", "development-tools", "web-programming::http-server"]
-exclude = ["/.github"]
+exclude = ["/.github", "/docs", "/bench"]
+
+# `cargo binstall live-serve` downloads the release archive instead of compiling.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.tar.gz"
+bin-dir = "{ name }-v{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.zip"
+pkg-fmt = "zip"
 
 [dependencies]
 axum = { version = "0.8.9", features = ["ws"] }

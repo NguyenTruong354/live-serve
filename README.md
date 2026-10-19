@@ -11,13 +11,37 @@ live-serve: starting in /home/me/my-site
 live-serve: http://127.0.0.1:5500/
 ```
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NguyenTruong354/live-serve/main/docs/images/listing-dark.png">
+  <img alt="A folder listing served by live-serve: clickable path, icons by file type, size and modified columns, and a filter box" src="https://raw.githubusercontent.com/NguyenTruong354/live-serve/main/docs/images/listing-light.png" width="720">
+</picture>
+
+## Why live-serve
+
+Compared with [`live-server`](https://www.npmjs.com/package/live-server), the package VS Code's Live Server extension runs, on the same folder and the same machine ([how it was measured](BENCHMARKS.md)):
+
+| | live-serve | live-server |
+|---|---:|---:|
+| Folder listing, 1,200 entries | **2.2 ms** | 54.9 ms |
+| HTML page with the reload script | **0.54 ms** | 0.86 ms |
+| First response after start | **45 ms** | ~1.5 s |
+| Memory | **10 MB** | ~240 MB |
+| Install | one ~1 MB binary | Node.js + packages |
+
+Static files cost the same for both; the difference is everything around them. It also does a few things live-server does not:
+
+- Refuses requests from other websites: DNS rebinding, cross-origin reads.
+- Hides `.env` and `.git`.
+- Swaps CSS without a reload, even when your editor writes temporary files.
+- Sets up VS Code and Zed tasks with one command.
+
 ## Quick start
 
 1. **Install** with [Rust](https://rustup.rs):
    ```
    cargo install live-serve
    ```
-   No Rust? Download the archive for your platform from [Releases](https://github.com/NguyenTruong354/live-serve/releases), unpack it, and put `live-serve` (`live-serve.exe` on Windows) on your `PATH`.
+   With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), `cargo binstall live-serve` downloads the prebuilt binary instead of compiling. No Rust? Download the archive for your platform from [Releases](https://github.com/NguyenTruong354/live-serve/releases), unpack it, and put `live-serve` (`live-serve.exe` on Windows) on your `PATH`.
 2. **Run it in your site's folder:**
    ```
    live-serve --open
@@ -50,7 +74,7 @@ Troubleshooting:
 
 - **Live reload.** Saving a file reloads open pages. Saving only CSS swaps the stylesheets in place, without a full reload.
 - **Never stale.** Every response carries `Cache-Control: no-store`, so you always get the latest build.
-- **Directory listings** for folders without an `index.html`: a clickable path, icons by file type, size and last-modified columns (in your local time), and a filter box (press `/`). They follow your system's light or dark theme, work on phones, and stay light: a folder of 1,000+ entries renders in about 1.5 ms.
+- **Directory listings** for folders without an `index.html`: a clickable path, icons by file type, size and last-modified columns (in your local time), and a filter box (press `/`). They follow your system's light or dark theme, work on phones, and stay light: a folder of 1,200 entries renders in about 2 ms.
 - **Media friendly.** Files stream from disk, with HTTP Range support so audio and video can seek.
 - **Single-page apps.** With `--spa`, unknown routes serve `/index.html`; missing assets still return 404.
 - **Busy port? It moves on.** If port 5500 is taken, it uses the next free port. `--strict-port` turns this off.
@@ -66,6 +90,12 @@ cargo install live-serve
 ```
 
 To upgrade later, run the same command again.
+
+**Prebuilt, through cargo** with [cargo-binstall](https://github.com/cargo-bins/cargo-binstall): it fetches the release binary for your platform, so nothing compiles.
+
+```
+cargo binstall live-serve
+```
 
 **Latest unreleased code**, straight from GitHub:
 
