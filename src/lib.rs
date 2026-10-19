@@ -709,26 +709,22 @@ fn watch(cfg: &Config, changes: broadcast::Sender<Change>, version: Arc<Version>
     let watching = if cfg.poll {
         Watching::Poll(poll(root, ignore, tx))
     } else {
+        // Whether the folder has gone (removed or renamed away) since it was last there.
+        let mut gone = false;
         let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             let Ok(event) = event else { return };
             if matches!(event.kind, notify::EventKind::Access(_)) {
                 return;
             }
             // The parent's watch also reports the folder's siblings; only the folder and what is inside count.
-            // For the folder itself only its coming and going does: the parent also sees it "modified" each
-            // time a file inside is created, which would turn a stylesheet's save into a full reload.
-            let replaced = matches!(
-                event.kind,
-                notify::EventKind::Create(_)
-                    | notify::EventKind::Remove(_)
-                    | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
-            );
+            let about_folder = event.paths.iter().any(|p| in_folder.contains(p));
+            let folder_counts = about_folder && folder_replaced(&event.kind, &mut gone);
             let paths: Vec<PathBuf> = event
                 .paths
                 .into_iter()
                 .filter(|p| {
                     in_folder.iter().any(|r| p.starts_with(r))
-                        && (replaced || !in_folder.contains(p))
+                        && (folder_counts || !in_folder.contains(p))
                         && !is_ignored(p, &root, &ignore)
                 })
                 .collect();
@@ -787,6 +783,24 @@ fn watch(cfg: &Config, changes: broadcast::Sender<Change>, version: Arc<Version>
         }
     });
     Ok(watching)
+}
+
+/// Whether an event of `kind` on the served folder itself is a change to report (and a reason to watch
+/// it again); `gone` tracks whether the folder went away since it was last there. Its going away
+/// (removed, renamed) counts, and so does its coming back. Not "modified": the parent sees that each
+/// time a file inside is created, which would turn a stylesheet's save into a full reload. Nor
+/// "created" unless it had gone: macOS reports the folder's creation late when it was made just before
+/// the server started, and that is no change to what the browser has.
+fn folder_replaced(kind: &notify::EventKind, gone: &mut bool) -> bool {
+    use notify::EventKind;
+    match kind {
+        EventKind::Remove(_) | EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
+            *gone = true;
+            true
+        }
+        EventKind::Create(_) => std::mem::take(gone),
+        _ => false,
+    }
 }
 
 /// Every file under `root` with its modified time and size.
@@ -1161,6 +1175,25 @@ mod tests {
         assert!(matches!(watch(&cfg, changes.clone(), version.clone()).unwrap(), Watching::Native(_)));
         cfg.poll = true;
         assert!(matches!(watch(&cfg, changes, version).unwrap(), Watching::Poll(_)));
+    }
+
+    #[test]
+    fn the_folder_counts_when_it_goes_and_comes_back_only() {
+        use notify::EventKind;
+        use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode};
+        let created = EventKind::Create(CreateKind::Folder);
+        let mut gone = false;
+        // macOS, at start: the folder's own creation, reported late. Nothing to reload.
+        assert!(!folder_replaced(&created, &mut gone));
+        // Files created inside make the parent see the folder "modified".
+        assert!(!folder_replaced(&EventKind::Modify(ModifyKind::Data(DataChange::Any)), &mut gone));
+        // rm -rf dist && mkdir dist: both count, once.
+        assert!(folder_replaced(&EventKind::Remove(RemoveKind::Folder), &mut gone));
+        assert!(folder_replaced(&created, &mut gone));
+        assert!(!folder_replaced(&created, &mut gone), "a second creation report is no new change");
+        // Renamed away and another folder renamed in.
+        assert!(folder_replaced(&EventKind::Modify(ModifyKind::Name(RenameMode::From)), &mut gone));
+        assert!(folder_replaced(&EventKind::Modify(ModifyKind::Name(RenameMode::To)), &mut gone));
     }
 
     #[test]
