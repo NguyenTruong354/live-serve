@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Saving a stylesheet through a temporary file renamed over it (`a.css.tmp.4242.…`, `a.css.2948423`), as write-file-atomic and many tools do, swaps the CSS again instead of reloading the page.
+- VS Code extension in `editors/vscode`: **Go Live** / **Port: N** in the status bar, **Open with live-serve** on HTML files, the binary bundled per platform. Release builds attach a `.vsix` for each platform.
+
 ## 0.3.2 (2026-10-19)
 
 - `--poll` scans the folder every 300 ms instead of waiting for file system events, which never arrive from WSL, Docker volumes or network drives. Ignored folders such as `node_modules` are never entered.

@@ -17,15 +17,20 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
+            vscode: linux-x64
           - os: macos-latest
             target: aarch64-apple-darwin
             archive: tar.gz
+            vscode: darwin-arm64
           - os: macos-latest
             target: x86_64-apple-darwin
             archive: tar.gz
+            vscode: darwin-x64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
+            vscode: win32-x64
+            exe: .exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -49,6 +54,19 @@ jobs:
           New-Item -ItemType Directory $name | Out-Null
           Copy-Item target/${{ matrix.target }}/release/live-serve.exe, README.md, LICENSE $name
           Compress-Archive -Path $name -DestinationPath "$name.zip"
+      # The VS Code extension for this platform, with this binary inside.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Package the VS Code extension
+        shell: bash
+        working-directory: editors/vscode
+        run: |
+          npm ci
+          npm test
+          node scripts/package.mjs ${{ matrix.vscode }} ../../target/${{ matrix.target }}/release/live-serve${{ matrix.exe }}
       - uses: softprops/action-gh-release@v3
         with:
-          files: live-serve-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive }}
+          files: |
+            live-serve-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive }}
+            editors/vscode/live-serve-${{ matrix.vscode }}-*.vsix

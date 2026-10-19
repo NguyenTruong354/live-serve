@@ -1,0 +1,154 @@
+{
+  "name": "live-serve",
+  "displayName": "live-serve: Go Live without Node",
+  "description": "Live reload for static sites from a 1.4 MB native server. Click Go Live; saving CSS swaps it in place.",
+  "version": "0.3.2",
+  "publisher": "nguyentruong354",
+  "license": "MIT",
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NguyenTruong354/live-serve.git",
+    "directory": "editors/vscode"
+  },
+  "homepage": "https://github.com/NguyenTruong354/live-serve/tree/main/editors/vscode#readme",
+  "bugs": {
+    "url": "https://github.com/NguyenTruong354/live-serve/issues"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "live server",
+    "live reload",
+    "go live",
+    "dev server",
+    "static server",
+    "html",
+    "css"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In an untrusted folder, the folder's own settings cannot change the host, the extra options or the binary.",
+      "restrictedConfigurations": [
+        "liveServe.host",
+        "liveServe.args",
+        "liveServe.binaryPath"
+      ]
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "liveServe.start",
+        "title": "Go Live",
+        "category": "live-serve",
+        "icon": "$(broadcast)"
+      },
+      {
+        "command": "liveServe.stop",
+        "title": "Stop",
+        "category": "live-serve"
+      },
+      {
+        "command": "liveServe.open",
+        "title": "Open with live-serve",
+        "category": "live-serve"
+      },
+      {
+        "command": "liveServe.toggle",
+        "title": "Start or Stop",
+        "category": "live-serve"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "liveServe.open",
+          "when": "resourceExtname =~ /^\\.html?$/i",
+          "group": "navigation@50"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "liveServe.open",
+          "when": "resourceLangId == html",
+          "group": "navigation@50"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "liveServe.open",
+          "when": "resourceLangId == html"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "liveServe.toggle",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "live-serve",
+      "properties": {
+        "liveServe.port": {
+          "type": "number",
+          "default": 5500,
+          "minimum": 0,
+          "maximum": 65535,
+          "markdownDescription": "Port to serve on. When it is taken, live-serve uses the next free one."
+        },
+        "liveServe.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "markdownDescription": "Address to listen on. `0.0.0.0` lets phones on your Wi-Fi open the page."
+        },
+        "liveServe.root": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "markdownDescription": "Folder to serve, relative to the workspace folder, e.g. `dist`. Empty serves the workspace folder."
+        },
+        "liveServe.openBrowser": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Open the default browser after **Go Live**."
+        },
+        "liveServe.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "More command-line options, e.g. `[\"--spa\"]` or `[\"--poll\"]`. See [the options](https://github.com/NguyenTruong354/live-serve#command-line)."
+        },
+        "liveServe.binaryPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Path to a `live-serve` binary to run instead of the one bundled with the extension."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:vscode": "node scripts/run-vscode-test.mjs",
+    "package": "node scripts/package.mjs"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "4.0.0"
+  }
+}

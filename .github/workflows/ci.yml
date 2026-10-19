@@ -10,7 +10,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            vscode: linux-x64
+          - os: macos-latest
+            vscode: darwin-arm64
+          - os: windows-latest
+            vscode: win32-x64
+            exe: .exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -21,3 +28,10 @@ jobs:
           node-version: 24
       - run: cargo test --locked
       - run: cargo build --release --locked
+      - name: VS Code extension
+        shell: bash
+        working-directory: editors/vscode
+        run: |
+          npm ci
+          npm test
+          node scripts/package.mjs ${{ matrix.vscode }} ../../target/release/live-serve${{ matrix.exe }}

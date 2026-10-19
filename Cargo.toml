@@ -9,7 +9,7 @@ repository = "https://github.com/NguyenTruong354/live-serve"
 homepage = "https://github.com/NguyenTruong354/live-serve"
 keywords = ["live-reload", "dev-server", "static", "http", "livereload"]
 categories = ["command-line-utilities", "development-tools", "web-programming::http-server"]
-exclude = ["/.github", "/docs", "/bench"]
+exclude = ["/.github", "/docs", "/bench", "/editors"]
 
 # `cargo binstall live-serve` downloads the release archive instead of compiling.
 [package.metadata.binstall]
