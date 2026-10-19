@@ -37,11 +37,14 @@ Static files cost the same for both; the difference is everything around them. I
 
 ## Quick start
 
-1. **Install** with [Rust](https://rustup.rs):
+1. **Install** with your package manager:
    ```
-   cargo install live-serve
+   brew install nguyentruong354/tap/live-serve        # macOS, Linux
+   scoop bucket add nguyentruong354 https://github.com/NguyenTruong354/scoop-bucket
+   scoop install live-serve                           # Windows
+   cargo install live-serve                           # anywhere with Rust
    ```
-   With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), `cargo binstall live-serve` downloads the prebuilt binary instead of compiling. No Rust? Download the archive for your platform from [Releases](https://github.com/NguyenTruong354/live-serve/releases), unpack it, and put `live-serve` (`live-serve.exe` on Windows) on your `PATH`.
+   More ways, including prebuilt archives that need nothing installed, are under [Install](#install).
 2. **Run it in your site's folder:**
    ```
    live-serve --open
@@ -82,6 +85,29 @@ Troubleshooting:
 - **Editor tasks in one command** for VS Code and Zed (`live-serve init`).
 
 ## Install
+
+**[Homebrew](https://brew.sh)** (macOS on Apple Silicon or Intel, Linux on x86_64), from the [tap](https://github.com/NguyenTruong354/homebrew-tap):
+
+```
+brew install nguyentruong354/tap/live-serve
+```
+
+Upgrade with `brew upgrade live-serve`.
+
+**[Scoop](https://scoop.sh)** (Windows), from the [bucket](https://github.com/NguyenTruong354/scoop-bucket):
+
+```
+scoop bucket add nguyentruong354 https://github.com/NguyenTruong354/scoop-bucket
+scoop install live-serve
+```
+
+Upgrade with `scoop update live-serve`.
+
+**winget** (Windows): the package `NguyenTruong354.LiveServe` is [waiting for review](https://github.com/microsoft/winget-pkgs/pull/455749). Once it is accepted:
+
+```
+winget install NguyenTruong354.LiveServe
+```
 
 **From [crates.io](https://crates.io/crates/live-serve)** (any platform with [Rust](https://rustup.rs)):
 
