@@ -52,16 +52,18 @@ Common cases:
 | You want to | Run |
 |---|---|
 | serve a built single-page app | `live-serve ./dist --spa` |
-| open it on your phone over Wi-Fi | `live-serve --host 0.0.0.0`, then `http://<your-ip>:5500` |
+| open it on your phone over Wi-Fi | `live-serve --host 0.0.0.0`, then the `on your network` address it prints |
 | use a custom name (hosts file, tunnel) | `live-serve --allow-host myapp.test` |
 | let pages on other origins `fetch` from it | `live-serve --cors` |
 | stop reloads from a busy build folder | `live-serve --ignore dist,coverage` |
 | reload from WSL, Docker or a network drive | `live-serve --poll` |
+| open a page other than the root | `live-serve --open=docs/` |
 
 Troubleshooting:
 
 - **403 "host name is not allowed":** you opened it under a name other than `localhost` or an IP address. Add `--allow-host <name>`.
 - **It started on 5501:** something else, often VS Code's Live Server, already uses 5500.
+- **It says the port is in use although nothing seems to run there:** another program listens on it, maybe on `0.0.0.0` (all addresses) where live-serve listens on `127.0.0.1`. It moves to the next port rather than take localhost away from that program.
 - **Saving does not reload** a folder in WSL, a Docker volume or on a network drive: the system sends no file events there. Add `--poll`.
 - **The editor cannot find `live-serve`:** restart the editor so it picks up the new `PATH`.
 - **macOS refuses to open it:** the binary is not signed. Run `xattr -d com.apple.quarantine live-serve` once.
@@ -129,7 +131,7 @@ cargo install --git https://github.com/NguyenTruong354/live-serve
 
 From a checkout of this repository, run `cargo install --path .`.
 
-**Prebuilt binaries:** download the archive for your platform from [Releases](https://github.com/NguyenTruong354/live-serve/releases), unpack it, and put `live-serve` (or `live-serve.exe`) somewhere on your `PATH`.
+**Prebuilt binaries** for Windows (x64, Arm64), macOS (Apple Silicon, Intel) and Linux (x86_64, Arm64; static, so any distribution, Ubuntu 20.04 and RHEL 8 included): download the archive for your platform from [Releases](https://github.com/NguyenTruong354/live-serve/releases), unpack it, and put `live-serve` (or `live-serve.exe`) somewhere on your `PATH`.
 
 ## Command line
 
@@ -152,6 +154,8 @@ live-serve init <vscode|zed> [DIR] [--port N]
 | `--no-reload` | off | plain static server: no injected script, no file watching |
 | `--poll` | off | scan for changes every 300 ms (skipping ignored folders) instead of using file system events; for WSL, Docker volumes and network drives, where events do not arrive. Reloads take about half a second instead of about 130 ms |
 | `--open` | off | open the default browser once the server is up |
+| `--open=PAGE` | | the same, at a page (`--open=docs/`, `--open=about.html`) |
+| `--exit-on-stdin-close` | off | stop when standard input closes; for editors and tools that start live-serve, so it never outlives them (the VS Code extension uses it) |
 | `-V, --version` | | |
 | `-h, --help` | | |
 
@@ -212,6 +216,8 @@ Each HTML page, including directory listings, gets a small script just before `<
 The server watches the folder recursively. It waits until no file has changed for 120 ms, so a build that writes many files causes one reload, not many; during a build that runs longer than 2 seconds it reloads every 2 seconds. It then sends `css` if only stylesheets changed, or `reload` otherwise. Editor temporary files (`a.css~`, Vim swap files, JetBrains safe-write copies, `*.tmp`) are ignored, so saving a stylesheet still swaps it in place.
 
 Before a reload, the script fetches the page itself and reloads only once that succeeds, retrying every 500 ms. A build that is halfway through never replaces the page you are looking at: not while the page answers 404 or 500, and not while its folder answers with a directory listing because `index.html` is gone for a moment.
+
+A build may delete the served folder and write it anew (`rm -rf dist`); the watch on the folder dies with it, so the server also watches the folder's parent, without its subfolders, and watches the folder again as soon as it is back.
 
 If the connection drops (the server restarts, the laptop sleeps), the script reconnects every second. The server tells each new connection a version that changes with every change it announces and every time it starts; the page reloads only if that version differs from the one it had, so a reconnect with nothing new keeps what you typed into the page.
 

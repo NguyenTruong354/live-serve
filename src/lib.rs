@@ -279,7 +279,8 @@ pub fn host_allowed(authority: &str, allowed: &[String]) -> bool {
     name == "localhost"
         || name.ends_with(".localhost")
         || name.parse::<std::net::IpAddr>().is_ok()
-        || allowed.iter().any(|a| a == "*" || a.eq_ignore_ascii_case(&name))
+        // Names may come with a port ("myapp.test:8080"), as people copy them from the address bar.
+        || allowed.iter().any(|a| a == "*" || host_name(a) == name)
 }
 
 /// Whether a page with this `Origin` ("http://localhost:5500") may open the reload WebSocket.
@@ -355,6 +356,13 @@ pub async fn bind(host: &str, port: u16, strict: bool) -> std::io::Result<TcpLis
     let mut last_error = None;
     for offset in 0..attempts {
         let Some(candidate) = port.checked_add(offset) else { break };
+        if taken_alongside(host, candidate) {
+            last_error = Some(std::io::Error::new(
+                std::io::ErrorKind::AddrInUse,
+                format!("port {candidate} is used by another program"),
+            ));
+            continue;
+        }
         match TcpListener::bind((host, candidate)).await {
             Ok(listener) => return Ok(listener),
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => last_error = Some(e),
@@ -364,6 +372,37 @@ pub async fn bind(host: &str, port: u16, strict: bool) -> std::io::Result<TcpLis
     Err(last_error.unwrap_or_else(|| std::io::Error::other("no port available")))
 }
 
+/// Whether another program has `port` on the address that overlaps `host`'s without being it: all
+/// addresses (0.0.0.0) when `host` is one address, or loopback when `host` is all of them. Windows and
+/// macOS let the two binds coexist and give the traffic to the more specific one, so the busy port would
+/// go unnoticed: live-serve would take localhost away from a server on 0.0.0.0, or print a localhost
+/// URL that another server answers. The check binds without listening, so nothing is exposed meanwhile.
+fn taken_alongside(host: &str, port: u16) -> bool {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
+    if port == 0 {
+        return false;
+    }
+    let Some(addr) = (host, port).to_socket_addrs().ok().and_then(|mut addrs| addrs.next()) else {
+        return false;
+    };
+    let other = match addr.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+    };
+    let socket = if other.is_ipv4() { tokio::net::TcpSocket::new_v4() } else { tokio::net::TcpSocket::new_v6() };
+    let Ok(socket) = socket else { return false };
+    // As live-serve's own listener does on Unix, so connections lingering from a previous run do not count.
+    // Not on Windows, where it would let the check share the port with anyone.
+    #[cfg(unix)]
+    let _ = socket.set_reuseaddr(true);
+    matches!(
+        socket.bind(SocketAddr::new(other, port)),
+        Err(e) if matches!(e.kind(), std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied)
+    )
+}
+
 /// The URL to show for a bound address ("0.0.0.0" → localhost, IPv6 in brackets).
 pub fn display_url(host: &str, port: u16) -> String {
     match host {
@@ -371,6 +410,26 @@ pub fn display_url(host: &str, port: u16) -> String {
         h if h.contains(':') && !h.starts_with('[') => format!("http://[{h}]:{port}/"),
         h => format!("http://{h}:{port}/"),
     }
+}
+
+/// This machine's address on its network (the one its default route goes out from), for the URL to
+/// open on a phone when serving on all addresses. None when there is no network. Nothing is sent:
+/// connecting a UDP socket only picks the route.
+pub fn lan_address() -> Option<std::net::IpAddr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("192.0.2.1:9").ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+}
+
+/// Characters escaped in a page path given to `--open=PAGE`; `/` stays, so folders keep working.
+const PAGE_PATH: &percent_encoding::AsciiSet =
+    &percent_encoding::NON_ALPHANUMERIC.remove(b'/').remove(b'-').remove(b'.').remove(b'_').remove(b'~');
+
+/// The URL of `page` ("docs/", "/about.html", "a b.html") on the server at `base` ("http://localhost:5500/").
+pub fn page_url(base: &str, page: &str) -> String {
+    let page = page.trim_start_matches(['/', '\\']).replace('\\', "/");
+    format!("{base}{}", percent_encoding::utf8_percent_encode(&page, PAGE_PATH))
 }
 
 /// What the files look like to browsers: a token sent to each socket on connect and after each
@@ -479,11 +538,18 @@ async fn file_handler(State(state): State<AppState>, request: Request) -> Respon
         };
     }
 
+    // HEAD goes to tower-http too, which answers it without reading the file.
     if let Some(kind) = content_type(&path)
+        && request.method() != axum::http::Method::HEAD
         && !request.headers().contains_key(header::RANGE)
         && let Some(bytes) = read_whole(&path).await
     {
-        return (StatusCode::OK, [(header::CONTENT_TYPE, HeaderValue::from_static(kind))], bytes).into_response();
+        // Ranges are served (below), and players look for this before they let you seek.
+        let headers = [
+            (header::CONTENT_TYPE, HeaderValue::from_static(kind)),
+            (header::ACCEPT_RANGES, HeaderValue::from_static("bytes")),
+        ];
+        return (StatusCode::OK, headers, bytes).into_response();
     }
 
     // Big files, ranges (media seeking) and unknown types stream from disk via tower-http.
@@ -612,8 +678,8 @@ async fn client(mut socket: WebSocket, mut changes: broadcast::Receiver<Change>,
 /// What keeps `watch` going; dropping it stops it.
 #[allow(dead_code, reason = "held only to be dropped")]
 enum Watching {
-    /// The system's file events.
-    Native(notify::RecommendedWatcher),
+    /// The system's file events; shared with the task that renews the watch when the folder comes back.
+    Native(Arc<std::sync::Mutex<notify::RecommendedWatcher>>),
     /// `--poll`: a thread scanning the folder, which stops once the flag is set.
     Poll(StopOnDrop),
 }
@@ -629,40 +695,84 @@ impl Drop for StopOnDrop {
 /// Watches `root` and announces one change per burst of events: once they stop for DEBOUNCE
 /// (plus POLL_INTERVAL when polling), or MAX_WAIT after the first. Ignored files are dropped
 /// right away, so they neither start nor stretch a burst.
+///
+/// A build may delete the served folder and make it again (`rm -rf dist`), and the system's watch
+/// dies with the old folder. So the parent is watched too, without its subfolders: when the folder
+/// itself is removed or created, the watch on it is renewed, and the page reloads.
 fn watch(cfg: &Config, changes: broadcast::Sender<Change>, version: Arc<Version>) -> notify::Result<Watching> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<PathBuf>>();
     let (root, ignore) = (cfg.root.clone(), cfg.ignore.clone());
+    // Events name the folder as watched (Windows) or with links resolved (macOS: /var → /private/var).
+    let real = cfg.root.canonicalize().map_or_else(|_| cfg.root.clone(), |r| strip_verbatim(&r));
+    let roots = Arc::new([cfg.root.clone(), real]);
+    let in_folder = roots.clone();
     let watching = if cfg.poll {
         Watching::Poll(poll(root, ignore, tx))
     } else {
+        // Whether the folder has gone (removed or renamed away) since it was last there.
+        let mut gone = false;
         let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             let Ok(event) = event else { return };
             if matches!(event.kind, notify::EventKind::Access(_)) {
                 return;
             }
-            let paths: Vec<PathBuf> = event.paths.into_iter().filter(|p| !is_ignored(p, &root, &ignore)).collect();
+            // The parent's watch also reports the folder's siblings; only the folder and what is inside count.
+            let about_folder = event.paths.iter().any(|p| in_folder.contains(p));
+            let folder_counts = about_folder && folder_replaced(&event.kind, &mut gone);
+            let paths: Vec<PathBuf> = event
+                .paths
+                .into_iter()
+                .filter(|p| {
+                    in_folder.iter().any(|r| p.starts_with(r))
+                        && (folder_counts || !in_folder.contains(p))
+                        && !is_ignored(p, &root, &ignore)
+                })
+                .collect();
             if !paths.is_empty() {
                 let _ = tx.send(paths);
             }
         })?;
         watcher.watch(&cfg.root, RecursiveMode::Recursive)?;
-        Watching::Native(watcher)
+        if let Some(parent) = cfg.root.parent() {
+            // Best effort: without it, live reload still works until the folder is replaced.
+            let _ = watcher.watch(parent, RecursiveMode::NonRecursive);
+        }
+        Watching::Native(Arc::new(std::sync::Mutex::new(watcher)))
     };
 
     let root = cfg.root.clone();
     let ignore = cfg.ignore.clone();
-    let debounce = match watching {
-        Watching::Native(_) => DEBOUNCE,
-        Watching::Poll(_) => DEBOUNCE + POLL_INTERVAL,
+    let (debounce, native) = match &watching {
+        Watching::Native(watcher) => (DEBOUNCE, Some(watcher.clone())),
+        Watching::Poll(_) => (DEBOUNCE + POLL_INTERVAL, None),
     };
+    // The folder itself was removed or created: watch it again, as soon as it is there.
+    let renew = move |paths: &[PathBuf]| {
+        let watcher = native.clone().filter(|_| paths.iter().any(|p| roots.contains(p)))?;
+        let root = root.clone();
+        Some(tokio::task::spawn_blocking(move || {
+            let Ok(mut watcher) = watcher.lock() else { return };
+            let _ = watcher.unwatch(&root);
+            let _ = watcher.watch(&root, RecursiveMode::Recursive);
+        }))
+    };
+    let root = cfg.root.clone();
     tokio::spawn(async move {
         while let Some(first) = rx.recv().await {
+            if let Some(renewing) = renew(&first) {
+                let _ = renewing.await;
+            }
             let mut batch = first;
             let give_up = Instant::now() + MAX_WAIT;
             while Instant::now() < give_up {
                 let quiet = (Instant::now() + debounce).min(give_up);
                 match tokio::time::timeout_at(quiet, rx.recv()).await {
-                    Ok(Some(paths)) => batch.extend(paths),
+                    Ok(Some(paths)) => {
+                        if let Some(renewing) = renew(&paths) {
+                            let _ = renewing.await;
+                        }
+                        batch.extend(paths)
+                    }
                     Ok(None) | Err(_) => break,
                 }
             }
@@ -673,6 +783,24 @@ fn watch(cfg: &Config, changes: broadcast::Sender<Change>, version: Arc<Version>
         }
     });
     Ok(watching)
+}
+
+/// Whether an event of `kind` on the served folder itself is a change to report (and a reason to watch
+/// it again); `gone` tracks whether the folder went away since it was last there. Its going away
+/// (removed, renamed) counts, and so does its coming back. Not "modified": the parent sees that each
+/// time a file inside is created, which would turn a stylesheet's save into a full reload. Nor
+/// "created" unless it had gone: macOS reports the folder's creation late when it was made just before
+/// the server started, and that is no change to what the browser has.
+fn folder_replaced(kind: &notify::EventKind, gone: &mut bool) -> bool {
+    use notify::EventKind;
+    match kind {
+        EventKind::Remove(_) | EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
+            *gone = true;
+            true
+        }
+        EventKind::Create(_) => std::mem::take(gone),
+        _ => false,
+    }
 }
 
 /// Every file under `root` with its modified time and size.
@@ -871,6 +999,36 @@ mod tests {
     }
 
     #[test]
+    fn page_urls() {
+        let base = "http://localhost:5500/";
+        assert_eq!(page_url(base, ""), base);
+        assert_eq!(page_url(base, "docs/"), "http://localhost:5500/docs/");
+        assert_eq!(page_url(base, "/about.html"), "http://localhost:5500/about.html");
+        assert_eq!(page_url(base, r"docs\a b.html"), "http://localhost:5500/docs/a%20b.html");
+        // Nothing a shell would act on (`&` ends a command for Windows' `start`), and no second host.
+        assert_eq!(page_url(base, "x&y?z#w"), "http://localhost:5500/x%26y%3Fz%23w");
+        assert_eq!(page_url(base, "//evil.example/"), "http://localhost:5500/evil.example/");
+        assert_eq!(page_url(base, "trang chủ.html"), "http://localhost:5500/trang%20ch%E1%BB%A7.html");
+    }
+
+    #[test]
+    fn the_lan_address_is_one_a_phone_can_reach() {
+        // None without a network (some CI sandboxes); otherwise never loopback or 0.0.0.0.
+        if let Some(ip) = lan_address() {
+            assert!(!ip.is_loopback() && !ip.is_unspecified(), "{ip}");
+        }
+    }
+
+    #[test]
+    fn allowed_names_may_carry_a_port() {
+        let extra = vec!["MyApp.test:8080".to_string(), "[fd00::1]:5500".to_string()];
+        assert!(host_allowed("myapp.test:8080", &extra));
+        assert!(host_allowed("myapp.test", &extra), "the port is not what is checked");
+        assert!(!host_allowed("other.test:8080", &extra));
+        assert!(host_allowed("[fd00::1]:5500", &extra));
+    }
+
+    #[test]
     fn allows_local_origins_only() {
         let none: &[String] = &[];
         assert!(origin_allowed("http://localhost:5500", none));
@@ -894,6 +1052,32 @@ mod tests {
         let next = bind("127.0.0.1", port, false).await.unwrap();
         assert_ne!(next.local_addr().unwrap().port(), port);
         assert!(bind("127.0.0.1", port, true).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_port_held_on_all_addresses_is_busy_for_loopback_too() {
+        // python -m http.server and many others listen on 0.0.0.0.
+        let other = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = other.local_addr().unwrap().port();
+        let ours = bind("127.0.0.1", port, false).await.unwrap();
+        assert_ne!(ours.local_addr().unwrap().port(), port, "would take localhost from the other server");
+        let err = bind("127.0.0.1", port, true).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse, "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_port_held_on_loopback_is_busy_for_all_addresses_too() {
+        let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = other.local_addr().unwrap().port();
+        let ours = bind("0.0.0.0", port, false).await.unwrap();
+        assert_ne!(ours.local_addr().unwrap().port(), port, "localhost:{port} would answer with the other server");
+    }
+
+    #[tokio::test]
+    async fn a_free_port_is_taken_as_asked() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let ours = bind("127.0.0.1", port, true).await.unwrap();
+        assert_eq!(ours.local_addr().unwrap().port(), port);
     }
 
     #[test]
@@ -991,6 +1175,25 @@ mod tests {
         assert!(matches!(watch(&cfg, changes.clone(), version.clone()).unwrap(), Watching::Native(_)));
         cfg.poll = true;
         assert!(matches!(watch(&cfg, changes, version).unwrap(), Watching::Poll(_)));
+    }
+
+    #[test]
+    fn the_folder_counts_when_it_goes_and_comes_back_only() {
+        use notify::EventKind;
+        use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode};
+        let created = EventKind::Create(CreateKind::Folder);
+        let mut gone = false;
+        // macOS, at start: the folder's own creation, reported late. Nothing to reload.
+        assert!(!folder_replaced(&created, &mut gone));
+        // Files created inside make the parent see the folder "modified".
+        assert!(!folder_replaced(&EventKind::Modify(ModifyKind::Data(DataChange::Any)), &mut gone));
+        // rm -rf dist && mkdir dist: both count, once.
+        assert!(folder_replaced(&EventKind::Remove(RemoveKind::Folder), &mut gone));
+        assert!(folder_replaced(&created, &mut gone));
+        assert!(!folder_replaced(&created, &mut gone), "a second creation report is no new change");
+        // Renamed away and another folder renamed in.
+        assert!(folder_replaced(&EventKind::Modify(ModifyKind::Name(RenameMode::From)), &mut gone));
+        assert!(folder_replaced(&EventKind::Modify(ModifyKind::Name(RenameMode::To)), &mut gone));
     }
 
     #[test]

@@ -35,3 +35,33 @@ jobs:
           npm ci
           npm test
           node scripts/package.mjs ${{ matrix.vscode }} ../../target/release/live-serve${{ matrix.exe }}
+
+  # The release targets the test job does not build: static Linux binaries (musl) and Windows on Arm.
+  release-targets:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: The binary is static and runs
+        if: contains(matrix.target, 'musl')
+        run: |
+          bin=target/${{ matrix.target }}/release/live-serve
+          file "$bin"
+          file "$bin" | grep -Eq 'static(ally|-pie) linked'
+          "$bin" --version

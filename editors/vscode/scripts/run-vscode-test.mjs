@@ -9,10 +9,13 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { binaryName } from '../lib.js';
+import { codeExecutable } from './find-code.mjs';
 
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
-if (!existsSync(join(here, 'bin'))) {
-  console.error('bin/ is empty: run scripts/package.mjs first.');
+const bundled = join(here, 'bin', binaryName(process.platform));
+if (!existsSync(bundled)) {
+  console.error(`${bundled} is missing: run scripts/package.mjs first.`);
   process.exit(2);
 }
 
@@ -20,10 +23,7 @@ function findCode() {
   if (process.argv[2]) return process.argv[2];
   const which = process.platform === 'win32' ? 'where' : 'which';
   const cli = execFileSync(which, ['code'], { encoding: 'utf8' }).split(/\r?\n/)[0].trim();
-  // The `code` command is a script in <install>/bin; the app is one folder up.
-  if (process.platform === 'win32') return join(dirname(dirname(cli)), 'Code.exe');
-  if (process.platform === 'darwin') return join(dirname(dirname(dirname(cli))), 'MacOS', 'Electron');
-  return join(dirname(dirname(cli)), 'code');
+  return codeExecutable(cli, process.platform);
 }
 
 const temp = mkdtempSync(join(tmpdir(), 'live-serve-vscode-'));

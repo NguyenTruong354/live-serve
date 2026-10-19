@@ -24,17 +24,17 @@ If port 5500 is taken (for example by another Live Server), it moves to the next
 | `liveServe.host` | `127.0.0.1` | `0.0.0.0` lets phones on your Wi-Fi open the page |
 | `liveServe.openBrowser` | `true` | open the browser after Go Live |
 | `liveServe.args` | `[]` | more options, e.g. `["--spa"]` for single-page apps or `["--poll"]` for WSL and network drives |
-| `liveServe.binaryPath` | (bundled) | run another `live-serve` binary instead |
+| `liveServe.binaryPath` | (bundled) | run another `live-serve` binary instead (one that knows `--exit-on-stdin-close`) |
 
-All server options are listed in the [live-serve README](https://github.com/NguyenTruong354/live-serve#command-line).
+In a multi-root workspace each folder can have its own settings, except `binaryPath`. All server options are listed in the [live-serve README](https://github.com/NguyenTruong354/live-serve#command-line).
 
 ## Safe by default
 
-The server listens on `127.0.0.1` only, refuses requests for unknown host names (DNS rebinding), hides dotfiles such as `.env`, and never sends CORS headers unless asked. In an untrusted folder, the folder's own settings cannot change the host, the options or the binary.
+The server listens on `127.0.0.1` only, refuses requests for unknown host names (DNS rebinding), hides dotfiles such as `.env`, and never sends CORS headers unless asked. In an untrusted folder, the folder's own settings cannot change the host, the served folder, the options or the binary.
 
 ## Platforms
 
-Windows x64, macOS (Apple Silicon and Intel) and Linux x64. Remote windows (WSL, SSH, containers) work too: the extension runs where the files are, and VS Code forwards the port.
+Windows (x64 and Arm), macOS (Apple Silicon and Intel) and Linux (x64 and Arm). The Linux server is a static binary, so it also runs on older distributions such as Ubuntu 20.04, Debian 11 or RHEL 8. Remote windows (WSL, SSH, containers) work too: the extension runs where the files are, and VS Code forwards the port.
 
 ## License
 

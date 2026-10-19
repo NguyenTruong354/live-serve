@@ -361,6 +361,35 @@ async fn one_reload_for_a_burst_of_writes() {
 }
 
 #[tokio::test]
+async fn keeps_watching_when_the_folder_is_deleted_and_made_again() {
+    // `live-serve dist` while a build runs `rm -rf dist` and writes it anew, again and again.
+    let project = site("rebuild");
+    let dist = project.join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    std::fs::write(dist.join("index.html"), "<html><body>v0</body></html>").unwrap();
+    let port = start(dist.clone()).await;
+    let mut ws = ws_connect(port).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for build in 1..=2 {
+        std::fs::remove_dir_all(&dist).unwrap();
+        std::fs::create_dir_all(&dist).unwrap();
+        std::fs::write(dist.join("index.html"), format!("<html><body>v{build}</body></html>")).unwrap();
+        let messages = ws_read_all(&mut ws, Duration::from_secs(1)).await;
+        assert!(!messages.is_empty() && messages.iter().all(|m| m == "reload"), "build {build}: {messages:?}");
+        // The new folder is watched: a plain edit afterwards still reloads.
+        std::fs::write(dist.join("app.js"), format!("// {build}")).unwrap();
+        let messages = ws_read_all(&mut ws, Duration::from_secs(1)).await;
+        assert_eq!(messages, ["reload"], "edit after build {build}");
+        let (_, body) = get(port, "/").await;
+        assert!(body.contains(&format!("v{build}")), "{body}");
+    }
+    // A sibling of the folder is no change to it.
+    std::fs::write(project.join("package.json"), "{}").unwrap();
+    let messages = ws_read_all(&mut ws, Duration::from_millis(800)).await;
+    assert_eq!(messages, Vec::<String>::new(), "sibling files are not watched");
+}
+
+#[tokio::test]
 async fn ignores_changes_in_node_modules() {
     let root = site("ignored");
     let port = start(root.clone()).await;
@@ -455,7 +484,21 @@ async fn serves_whole_files_and_head_requests() {
     let text = String::from_utf8_lossy(&buf).to_ascii_lowercase();
     assert!(text.starts_with("http/1.1 200"), "{text}");
     assert!(text.contains("content-length: 3000000"), "{text}");
+    assert!(text.contains("content-type: text/javascript"), "{text}");
     assert!(text.ends_with("\r\n\r\n"), "no body for HEAD");
+}
+
+#[tokio::test]
+async fn small_media_says_it_can_seek() {
+    // Read in one go (under 16 MB), yet players still need to hear that ranges work.
+    let root = site("seek");
+    std::fs::write(root.join("clip.mp4"), vec![7u8; 300_000]).unwrap();
+    let port = start(root).await;
+    let (head, body) = request_raw(port, "/clip.mp4", "localhost", "").await;
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+    assert!(head.contains("accept-ranges: bytes"), "{head}");
+    assert!(head.contains("content-type: video/mp4"), "{head}");
+    assert_eq!(body.len(), 300_000);
 }
 
 

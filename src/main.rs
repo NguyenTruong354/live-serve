@@ -1,4 +1,4 @@
-//! live-serve [DIR] [--port N] [--host H] [--ignore a,b] [--allow-host a,b] [--cors] [--dotfiles] [--poll] [--open]
+//! live-serve [DIR] [--port N] [--host H] [--ignore a,b] [--allow-host a,b] [--cors] [--dotfiles] [--poll] [--open[=PAGE]]
 //! live-serve init <vscode|zed> [DIR] [--port N]
 
 use std::io::Write;
@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use live_serve::init::{Editor, InitOutcome, init, tasks_json, tasks_path};
-use live_serve::{Config, bind, display_url, serve, strip_verbatim};
+use live_serve::{Config, bind, display_url, lan_address, page_url, serve, strip_verbatim};
 
 const HELP: &str = "live-serve: a static dev server that reloads the page when files change
 
@@ -29,6 +29,10 @@ Options:
                     using file system events, for WSL, Docker volumes and network drives
                     where events do not arrive; reloads take about half a second
       --open        open the browser once the server is up
+      --open=PAGE   the same, at PAGE (e.g. --open=docs/ or --open=about.html)
+      --exit-on-stdin-close
+                    stop when standard input closes: for editors and tools that start
+                    live-serve, so it never outlives them
   -V, --version     print the version
   -h, --help        print this help";
 
@@ -44,7 +48,9 @@ struct ServeArgs {
     dotfiles: bool,
     allow_host: Vec<String>,
     poll: bool,
-    open: bool,
+    /// The page to open in the browser ("" for the root), if any.
+    open: Option<String>,
+    exit_on_stdin_close: bool,
 }
 
 enum Command {
@@ -76,7 +82,8 @@ fn parse(args: Vec<String>) -> Result<Command, String> {
         dotfiles: false,
         allow_host: vec![],
         poll: false,
-        open: false,
+        open: None,
+        exit_on_stdin_close: false,
     };
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -101,7 +108,10 @@ fn parse(args: Vec<String>) -> Result<Command, String> {
             "--spa" => serve.spa = true,
             "--no-reload" => serve.reload = false,
             "--poll" => serve.poll = true,
-            "--open" => serve.open = true,
+            "--open" => serve.open = Some(String::new()),
+            // Only with "=": a bare word after --open stays the folder to serve.
+            s if s.starts_with("--open=") => serve.open = Some(s["--open=".len()..].to_string()),
+            "--exit-on-stdin-close" => serve.exit_on_stdin_close = true,
             s if s.starts_with('-') => return Err(format!("unknown option: {s}")),
             dir => serve.root = PathBuf::from(dir),
         }
@@ -170,9 +180,16 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     }
     let url = display_url(&args.host, port);
     say(&format!("live-serve: {url}"));
-    if args.open {
-        open_browser(&url);
+    // On all addresses it is meant for other devices: say which address they should open.
+    // After the line above, which editors read as the server's URL.
+    let everywhere = args.host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_unspecified()) || args.host == "[::]";
+    if everywhere && let Some(ip) = lan_address() {
+        say(&format!("live-serve: on your network: {}", display_url(&ip.to_string(), port)));
     }
+    if let Some(page) = &args.open {
+        open_browser(&page_url(&url, page));
+    }
+    let stdin_closed = stdin_closed(args.exit_on_stdin_close);
 
     let mut cfg = Config::new(args.root);
     cfg.ignore = args.ignore;
@@ -196,7 +213,29 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
             say("live-serve: stopped");
             ExitCode::SUCCESS
         }
+        _ = stdin_closed => {
+            say("live-serve: stopped (standard input closed)");
+            ExitCode::SUCCESS
+        }
     }
+}
+
+/// Resolves once standard input reaches its end, when `enabled`; never otherwise. An editor that starts
+/// live-serve with a pipe on stdin keeps it open while it runs; if the editor dies, so does the pipe.
+/// A plain thread, not the runtime's blocking pool, which would wait for it at exit.
+async fn stdin_closed(enabled: bool) {
+    if !enabled {
+        return std::future::pending().await;
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut stdin = std::io::stdin();
+        let mut buf = [0u8; 256];
+        while matches!(stdin.read(&mut buf), Ok(n) if n > 0) {}
+        let _ = tx.send(());
+    });
+    let _ = rx.await;
 }
 
 fn open_browser(url: &str) {
@@ -208,6 +247,35 @@ fn open_browser(url: &str) {
     let result = std::process::Command::new("xdg-open").arg(url).spawn();
     if let Err(e) = result {
         eprintln!("live-serve: could not open the browser: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn serve_args(args: &[&str]) -> ServeArgs {
+        match parse(args.iter().map(|a| a.to_string()).collect()) {
+            Ok(Command::Serve(args)) => args,
+            _ => panic!("not a serve command: {args:?}"),
+        }
+    }
+
+    #[test]
+    fn open_takes_a_page_only_after_an_equals_sign() {
+        assert_eq!(serve_args(&[]).open, None);
+        assert_eq!(serve_args(&["--open"]).open.as_deref(), Some(""));
+        assert_eq!(serve_args(&["--open=docs/"]).open.as_deref(), Some("docs/"));
+        // A word after a bare --open is still the folder to serve.
+        let args = serve_args(&["--open", "src"]);
+        assert_eq!(args.open.as_deref(), Some(""));
+        assert!(args.root.ends_with("src"), "{}", args.root.display());
+    }
+
+    #[test]
+    fn exit_on_stdin_close_is_opt_in() {
+        assert!(!serve_args(&[]).exit_on_stdin_close);
+        assert!(serve_args(&["--exit-on-stdin-close"]).exit_on_stdin_close);
     }
 }
 
