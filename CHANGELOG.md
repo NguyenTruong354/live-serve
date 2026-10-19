@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Live reload keeps working when a build deletes the served folder and makes it again (`rm -rf dist`). Until now the watch died with the old folder, and nothing reloaded after the first rebuild.
+- A port is in use also when another program listens on it at the other kind of address: on `0.0.0.0` while live-serve asks for `127.0.0.1`, or the other way round. Windows and macOS let both binds coexist, so live-serve used to take localhost away from that program, or print a localhost address that the other program answered.
+- `--host 0.0.0.0` also prints the address to open from a phone or another computer: `live-serve: on your network: http://192.168.1.20:5500/`.
+- `--open=PAGE` opens the browser at a page: `--open=docs/`, `--open=about.html`.
+- `--exit-on-stdin-close` stops the server when its standard input closes, so an editor that crashes leaves no server behind. The VS Code extension uses it.
+- Media and other known types read in one go now say `Accept-Ranges: bytes`, as bigger files did, so players let you seek; `HEAD` requests no longer read the file.
+- `--allow-host` names may carry a port (`myapp.test:8080`).
+- Release archives and VS Code packages for Linux on Arm (`aarch64-unknown-linux-musl`) and Windows on Arm (`aarch64-pc-windows-msvc`). The Linux binaries are now static (musl), so they run on older distributions such as Ubuntu 20.04, Debian 11 and RHEL 8; the Linux x86_64 archive is now named `x86_64-unknown-linux-musl`.
+- VS Code extension: see [its changelog](editors/vscode/CHANGELOG.md).
+
 ## 0.3.3 (2026-10-19)
 
 - Saving a stylesheet through a temporary file renamed over it (`a.css.tmp.4242.…`, `a.css.2948423`), as write-file-atomic and many tools do, swaps the CSS again instead of reloading the page.
