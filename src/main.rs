@@ -1,4 +1,4 @@
-//! live-serve [DIR] [--port N] [--host H] [--ignore a,b] [--allow-host a,b] [--cors] [--dotfiles] [--open]
+//! live-serve [DIR] [--port N] [--host H] [--ignore a,b] [--allow-host a,b] [--cors] [--dotfiles] [--poll] [--open]
 //! live-serve init <vscode|zed> [DIR] [--port N]
 
 use std::io::Write;
@@ -25,6 +25,9 @@ Options:
       --cors        send Access-Control-Allow-Origin: *, so other sites can read the files
       --dotfiles    serve names starting with \".\" (.env, .git); hidden by default
       --no-reload   plain static server: no injected script, no file watching
+      --poll        scan for changes every 300 ms (skipping ignored folders) instead of
+                    using file system events, for WSL, Docker volumes and network drives
+                    where events do not arrive; reloads take about half a second
       --open        open the browser once the server is up
   -V, --version     print the version
   -h, --help        print this help";
@@ -40,6 +43,7 @@ struct ServeArgs {
     cors: bool,
     dotfiles: bool,
     allow_host: Vec<String>,
+    poll: bool,
     open: bool,
 }
 
@@ -71,6 +75,7 @@ fn parse(args: Vec<String>) -> Result<Command, String> {
         cors: false,
         dotfiles: false,
         allow_host: vec![],
+        poll: false,
         open: false,
     };
     while let Some(arg) = iter.next() {
@@ -95,6 +100,7 @@ fn parse(args: Vec<String>) -> Result<Command, String> {
             "--dotfiles" => serve.dotfiles = true,
             "--spa" => serve.spa = true,
             "--no-reload" => serve.reload = false,
+            "--poll" => serve.poll = true,
             "--open" => serve.open = true,
             s if s.starts_with('-') => return Err(format!("unknown option: {s}")),
             dir => serve.root = PathBuf::from(dir),
@@ -174,6 +180,7 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     cfg.reload = args.reload;
     cfg.cors = args.cors;
     cfg.dotfiles = args.dotfiles;
+    cfg.poll = args.poll;
     // The name it was started on is answered too, e.g. `--host mybox.lan`.
     cfg.allowed_hosts = args.allow_host;
     cfg.allowed_hosts.push(args.host);

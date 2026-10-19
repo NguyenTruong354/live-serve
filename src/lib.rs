@@ -11,10 +11,12 @@ pub mod listing;
 
 pub use listing::{Entry, directory_listing};
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 use axum::Router;
 use axum::body::Body;
@@ -58,18 +60,49 @@ const DEBOUNCE: Duration = Duration::from_millis(120);
 /// ...or at the latest this long after the first event, so a long build still reloads now and then.
 const MAX_WAIT: Duration = Duration::from_secs(2);
 
-const RELOAD_SCRIPT: &str = r#"<script>(()=>{const u=(location.protocol==="https:"?"wss://":"ws://")+location.host+"/__live/ws";const c=()=>{const w=new WebSocket(u);w.onmessage=e=>{if(e.data==="css"){for(const l of document.querySelectorAll('link[rel="stylesheet"]')){const h=new URL(l.href);h.searchParams.set("_live",Date.now());l.href=h.href}}else{location.reload()}};w.onclose=()=>setTimeout(c,1000)};c()})();</script>"#;
+/// How often `--poll` scans the folder. A burst then also waits this long for quiet, since a poll
+/// reports a build that is still writing only once per scan.
+const POLL_INTERVAL: Duration = Duration::from_millis(300);
+
+/// The script injected into HTML pages; `$listing` is 1 in directory listings, else 0.
+/// - On connecting, the server sends "id:" and a token that changes with every change it announces
+///   and every time it starts. The script reconnects every second after a drop, and reloads only if
+///   the token it gets back differs from the one it had: a dropped connection to the same server, with
+///   nothing new, keeps what you typed; a restarted server always reloads, since files may have changed.
+/// - Before reloading it fetches the page, retrying every 500 ms, until that answers OK, and, unless the
+///   page is a listing itself, not with a listing (`X-Live-Serve: listing`): a build that has removed
+///   index.html or answers 404 or 500 for a moment never replaces the page. Reload messages meanwhile
+///   join the wait.
+macro_rules! reload_script {
+    ($listing:literal) => {
+        concat!(
+            r#"<script>(()=>{const L="#,
+            $listing,
+            r#",u=(location.protocol==="https:"?"wss://":"ws://")+location.host+"/__live/ws";let id=null,waiting=false;const r=()=>{if(waiting)return;waiting=true;const t=()=>fetch(location.href,{cache:"no-store"}).then(s=>{if(!s.ok||!L&&s.headers.get("x-live-serve")==="listing")throw 0;location.reload()}).catch(()=>setTimeout(t,500));t()};const c=()=>{const w=new WebSocket(u);let first=true;w.onmessage=e=>{const d=e.data;if(d.startsWith("id:")){if(first&&id!==null&&d!==id)r();first=false;id=d}else if(d==="css"){for(const l of document.querySelectorAll('link[rel="stylesheet"]')){const h=new URL(l.href);h.searchParams.set("_live",Date.now());l.href=h.href}}else{r()}};w.onclose=()=>setTimeout(c,1000)};c()})();</script>"#
+        )
+    };
+}
+
+const RELOAD_SCRIPT: &str = reload_script!("0");
+const LISTING_RELOAD_SCRIPT: &str = reload_script!("1");
+
+/// Header that marks a directory listing, so the reload script can tell it from the page it waits for.
+const LISTING_HEADER: &str = "x-live-serve";
 
 /// Inserts the reload script before the last `</body>` (any case), or at the end when there is none.
 /// Works on bytes, so pages in any ASCII-compatible encoding come through unchanged.
 pub fn inject_reload_script(html: &[u8]) -> Vec<u8> {
+    inject(html, RELOAD_SCRIPT)
+}
+
+fn inject(html: &[u8], script: &str) -> Vec<u8> {
     let at = html
         .windows(7)
         .rposition(|w| w.eq_ignore_ascii_case(b"</body>"))
         .unwrap_or(html.len());
-    let mut out = Vec::with_capacity(html.len() + RELOAD_SCRIPT.len());
+    let mut out = Vec::with_capacity(html.len() + script.len());
     out.extend_from_slice(&html[..at]);
-    out.extend_from_slice(RELOAD_SCRIPT.as_bytes());
+    out.extend_from_slice(script.as_bytes());
     out.extend_from_slice(&html[at..]);
     out
 }
@@ -256,11 +289,14 @@ pub struct Config {
     pub dotfiles: bool,
     /// Host names answered besides IP addresses, `localhost` and `*.localhost` ("*" for any).
     pub allowed_hosts: Vec<String>,
+    /// Scan the folder for changes every POLL_INTERVAL instead of waiting for the system's file events,
+    /// which do not arrive from WSL, Docker volumes or network drives.
+    pub poll: bool,
 }
 
 impl Config {
     /// Serve `root` with the defaults: reload on, no SPA fallback, nothing extra ignored,
-    /// no CORS, dotfiles hidden, only local host names.
+    /// no CORS, dotfiles hidden, only local host names, native file events.
     pub fn new(root: PathBuf) -> Config {
         Config {
             root,
@@ -270,6 +306,7 @@ impl Config {
             cors: false,
             dotfiles: false,
             allowed_hosts: vec![],
+            poll: false,
         }
     }
 }
@@ -319,11 +356,32 @@ pub fn display_url(host: &str, port: u16) -> String {
     }
 }
 
+/// What the files look like to browsers: a token sent to each socket on connect and after each
+/// change, which differs after any change and in every run of the server.
+struct Version {
+    /// When this server started, in nanoseconds.
+    boot: u128,
+    /// Changes announced since.
+    changes: AtomicU64,
+}
+
+impl Version {
+    fn new() -> Version {
+        let boot = SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        Version { boot, changes: AtomicU64::new(0) }
+    }
+
+    fn token(&self) -> String {
+        format!("id:{:x}.{}", self.boot, self.changes.load(Ordering::Relaxed))
+    }
+}
+
 #[derive(Clone)]
 struct AppState {
     /// The served folder, canonical, so `locate` needs no canonicalize of its own for it.
     real_root: Arc<PathBuf>,
     changes: broadcast::Sender<Change>,
+    version: Arc<Version>,
     spa: bool,
     reload: bool,
     cors: bool,
@@ -385,7 +443,10 @@ async fn file_handler(State(state): State<AppState>, request: Request) -> Respon
                 let last = url_path.rsplit('/').next().unwrap_or("");
                 return redirect(&format!("./{last}/"));
             }
-            return html_response(&state, list_dir(&url_path, &dir, state.dotfiles).await.into_bytes());
+            let html = list_dir(&url_path, &dir, state.dotfiles).await.into_bytes();
+            let mut response = html_response(&state, html, LISTING_RELOAD_SCRIPT);
+            response.headers_mut().insert(LISTING_HEADER, HeaderValue::from_static("listing"));
+            return response;
         }
         None if state.spa && !looks_like_asset(&url_path) => match locate_blocking(&state, "/index.html").await {
             Some(Target::File(index)) => index,
@@ -396,7 +457,7 @@ async fn file_handler(State(state): State<AppState>, request: Request) -> Respon
 
     if is_html(&path) {
         return match tokio::fs::read(&path).await {
-            Ok(bytes) => html_response(&state, bytes),
+            Ok(bytes) => html_response(&state, bytes, RELOAD_SCRIPT),
             Err(_) => not_found(),
         };
     }
@@ -468,10 +529,10 @@ fn read_entries(dir: &Path, dotfiles: bool) -> Vec<Entry> {
         .collect()
 }
 
-fn html_response(state: &AppState, html: Vec<u8>) -> Response {
+fn html_response(state: &AppState, html: Vec<u8>, script: &str) -> Response {
     // Claim UTF-8 only when it is; otherwise the browser goes by the page's own <meta charset>.
     let kind = if std::str::from_utf8(&html).is_ok() { "text/html; charset=utf-8" } else { "text/html" };
-    let body = if state.reload { inject_reload_script(&html) } else { html };
+    let body = if state.reload { inject(&html, script) } else { html };
     (StatusCode::OK, [(header::CONTENT_TYPE, HeaderValue::from_static(kind))], body).into_response()
 }
 
@@ -502,15 +563,21 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>, headers
         return forbidden();
     }
     let changes = state.changes.subscribe();
-    ws.on_upgrade(move |socket| client(socket, changes))
+    ws.on_upgrade(move |socket| client(socket, changes, state.version))
 }
 
-async fn client(mut socket: WebSocket, mut changes: broadcast::Receiver<Change>) {
+/// Sends the version token, then each change followed by the new token.
+async fn client(mut socket: WebSocket, mut changes: broadcast::Receiver<Change>, version: Arc<Version>) {
+    if socket.send(Message::Text(version.token().into())).await.is_err() {
+        return;
+    }
     loop {
         tokio::select! {
             change = changes.recv() => match change {
                 Ok(change) => {
-                    if socket.send(Message::Text(change.as_str().into())).await.is_err() {
+                    let sent = socket.send(Message::Text(change.as_str().into())).await.is_ok()
+                        && socket.send(Message::Text(version.token().into())).await.is_ok();
+                    if !sent {
                         break;
                     }
                 }
@@ -525,56 +592,139 @@ async fn client(mut socket: WebSocket, mut changes: broadcast::Receiver<Change>)
     }
 }
 
-/// Watches `root` and announces one change per burst of events: once they stop for DEBOUNCE,
-/// or MAX_WAIT after the first. Ignored files are dropped right away, so they neither start
-/// nor stretch a burst.
-fn watch(cfg: &Config, changes: broadcast::Sender<Change>) -> notify::Result<notify::RecommendedWatcher> {
+/// What keeps `watch` going; dropping it stops it.
+#[allow(dead_code, reason = "held only to be dropped")]
+enum Watching {
+    /// The system's file events.
+    Native(notify::RecommendedWatcher),
+    /// `--poll`: a thread scanning the folder, which stops once the flag is set.
+    Poll(StopOnDrop),
+}
+
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Watches `root` and announces one change per burst of events: once they stop for DEBOUNCE
+/// (plus POLL_INTERVAL when polling), or MAX_WAIT after the first. Ignored files are dropped
+/// right away, so they neither start nor stretch a burst.
+fn watch(cfg: &Config, changes: broadcast::Sender<Change>, version: Arc<Version>) -> notify::Result<Watching> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<PathBuf>>();
     let (root, ignore) = (cfg.root.clone(), cfg.ignore.clone());
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        let Ok(event) = event else { return };
-        if matches!(event.kind, notify::EventKind::Access(_)) {
-            return;
-        }
-        let paths: Vec<PathBuf> = event.paths.into_iter().filter(|p| !is_ignored(p, &root, &ignore)).collect();
-        if !paths.is_empty() {
-            let _ = tx.send(paths);
-        }
-    })?;
-    watcher.watch(&cfg.root, RecursiveMode::Recursive)?;
+    let watching = if cfg.poll {
+        Watching::Poll(poll(root, ignore, tx))
+    } else {
+        let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            let Ok(event) = event else { return };
+            if matches!(event.kind, notify::EventKind::Access(_)) {
+                return;
+            }
+            let paths: Vec<PathBuf> = event.paths.into_iter().filter(|p| !is_ignored(p, &root, &ignore)).collect();
+            if !paths.is_empty() {
+                let _ = tx.send(paths);
+            }
+        })?;
+        watcher.watch(&cfg.root, RecursiveMode::Recursive)?;
+        Watching::Native(watcher)
+    };
 
     let root = cfg.root.clone();
     let ignore = cfg.ignore.clone();
+    let debounce = match watching {
+        Watching::Native(_) => DEBOUNCE,
+        Watching::Poll(_) => DEBOUNCE + POLL_INTERVAL,
+    };
     tokio::spawn(async move {
         while let Some(first) = rx.recv().await {
             let mut batch = first;
             let give_up = Instant::now() + MAX_WAIT;
             while Instant::now() < give_up {
-                let quiet = (Instant::now() + DEBOUNCE).min(give_up);
+                let quiet = (Instant::now() + debounce).min(give_up);
                 match tokio::time::timeout_at(quiet, rx.recv()).await {
                     Ok(Some(paths)) => batch.extend(paths),
                     Ok(None) | Err(_) => break,
                 }
             }
             if let Some(change) = classify(&batch, &root, &ignore) {
+                version.changes.fetch_add(1, Ordering::Relaxed);
                 let _ = changes.send(change);
             }
         }
     });
-    Ok(watcher)
+    Ok(watching)
+}
+
+/// Every file under `root` with its modified time and size.
+type Snapshot = HashMap<PathBuf, (Option<SystemTime>, u64)>;
+
+/// Scans `root` every POLL_INTERVAL and sends the files that appeared, went away or changed.
+/// The first scan happens before it returns, so nothing written afterwards is missed.
+fn poll(root: PathBuf, ignore: Vec<String>, tx: mpsc::UnboundedSender<Vec<PathBuf>>) -> StopOnDrop {
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopped = stop.clone();
+    let mut last = snapshot(&root, &ignore);
+    std::thread::spawn(move || {
+        while !stopped.load(Ordering::Relaxed) {
+            std::thread::sleep(POLL_INTERVAL);
+            let now = snapshot(&root, &ignore);
+            let paths = changed(&last, &now);
+            if !paths.is_empty() && tx.send(paths).is_err() {
+                break;
+            }
+            last = now;
+        }
+    });
+    StopOnDrop(stop)
+}
+
+/// The files under `root`, never entering ignored directories, so a big `node_modules` costs nothing.
+/// Directories themselves are left out: their times change on every save through a temporary file.
+fn snapshot(root: &Path, ignore: &[String]) -> Snapshot {
+    let mut files = HashMap::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        let Ok(read) = std::fs::read_dir(&dir) else { continue };
+        for entry in read.filter_map(Result::ok) {
+            let path = entry.path();
+            if is_ignored(&path, root, ignore) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                dirs.push(path);
+            } else {
+                files.insert(path, (meta.modified().ok(), meta.len()));
+            }
+        }
+    }
+    files
+}
+
+/// Files added, removed or changed from `old` to `new`.
+fn changed(old: &Snapshot, new: &Snapshot) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> =
+        new.iter().filter(|(path, stat)| old.get(*path) != Some(stat)).map(|(path, _)| path.clone()).collect();
+    paths.extend(old.keys().filter(|path| !new.contains_key(*path)).cloned());
+    paths
 }
 
 /// Serves on `listener` until an error or the process stops.
 pub async fn serve(listener: TcpListener, cfg: Config) -> std::io::Result<()> {
     let (changes, _) = broadcast::channel(16);
-    let _watcher = if cfg.reload {
-        Some(watch(&cfg, changes.clone()).map_err(std::io::Error::other)?)
+    let version = Arc::new(Version::new());
+    let _watching = if cfg.reload {
+        Some(watch(&cfg, changes.clone(), version.clone()).map_err(std::io::Error::other)?)
     } else {
         None
     };
     let state = AppState {
         real_root: Arc::new(cfg.root.canonicalize()?),
         changes,
+        version,
         spa: cfg.spa,
         reload: cfg.reload,
         cors: cfg.cors,
@@ -768,5 +918,53 @@ mod tests {
         let root = Path::new("proj");
         let vim_save = vec![root.join("4913"), root.join("a.css~"), root.join("a.css")];
         assert_eq!(classify(&vim_save, root, &[]), Some(Change::Css));
+    }
+
+    #[tokio::test]
+    async fn poll_scans_instead_of_using_file_events() {
+        let mut cfg = Config::new(temp_root());
+        let (changes, _) = broadcast::channel(1);
+        let version = Arc::new(Version::new());
+        assert!(matches!(watch(&cfg, changes.clone(), version.clone()).unwrap(), Watching::Native(_)));
+        cfg.poll = true;
+        assert!(matches!(watch(&cfg, changes, version).unwrap(), Watching::Poll(_)));
+    }
+
+    #[test]
+    fn polling_never_enters_ignored_directories() {
+        let root = std::env::temp_dir().join(format!("live-serve-scan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in ["src", "node_modules/pkg", "packages/app/node_modules/dep", ".git", "dist"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        for file in ["index.html", "src/a.js", "src/a.css~", "node_modules/pkg/x.js", "packages/app/b.js"] {
+            std::fs::write(root.join(file), "x").unwrap();
+        }
+        std::fs::write(root.join("packages/app/node_modules/dep/y.js"), "y").unwrap();
+        std::fs::write(root.join(".git/HEAD"), "ref").unwrap();
+        std::fs::write(root.join("dist/out.js"), "o").unwrap();
+
+        let mut found: Vec<PathBuf> = snapshot(&root, &["dist".into()]).into_keys().collect();
+        found.sort();
+        let mut expected: Vec<PathBuf> =
+            ["index.html", "packages/app/b.js", "src/a.js"].iter().map(|f| root.join(f)).collect();
+        expected.sort();
+        assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn snapshots_differ_by_added_removed_and_changed_files() {
+        let t = SystemTime::UNIX_EPOCH;
+        let old: Snapshot = [("same", (Some(t), 1)), ("gone", (Some(t), 1)), ("edited", (Some(t), 1))]
+            .into_iter()
+            .map(|(p, s)| (PathBuf::from(p), s))
+            .collect();
+        let new: Snapshot = [("same", (Some(t), 1)), ("edited", (Some(t), 2)), ("added", (Some(t), 1))]
+            .into_iter()
+            .map(|(p, s)| (PathBuf::from(p), s))
+            .collect();
+        let mut paths = changed(&old, &new);
+        paths.sort();
+        assert_eq!(paths, ["added", "edited", "gone"].map(PathBuf::from));
     }
 }

@@ -65,11 +65,13 @@ Common cases:
 | use a custom name (hosts file, tunnel) | `live-serve --allow-host myapp.test` |
 | let pages on other origins `fetch` from it | `live-serve --cors` |
 | stop reloads from a busy build folder | `live-serve --ignore dist,coverage` |
+| reload from WSL, Docker or a network drive | `live-serve --poll` |
 
 Troubleshooting:
 
 - **403 "host name is not allowed":** you opened it under a name other than `localhost` or an IP address. Add `--allow-host <name>`.
 - **It started on 5501:** something else, often VS Code's Live Server, already uses 5500.
+- **Saving does not reload** a folder in WSL, a Docker volume or on a network drive: the system sends no file events there. Add `--poll`.
 - **The editor cannot find `live-serve`:** restart the editor so it picks up the new `PATH`.
 - **macOS refuses to open it:** the binary is not signed. Run `xattr -d com.apple.quarantine live-serve` once.
 
@@ -152,6 +154,7 @@ live-serve init <vscode|zed> [DIR] [--port N]
 | `--cors` | off | send `Access-Control-Allow-Origin: *`, so pages on other origins can read the files |
 | `--dotfiles` | off | serve files and folders whose names start with `.` (`.well-known` is always served) |
 | `--no-reload` | off | plain static server: no injected script, no file watching |
+| `--poll` | off | scan for changes every 300 ms (skipping ignored folders) instead of using file system events; for WSL, Docker volumes and network drives, where events do not arrive. Reloads take about half a second instead of about 130 ms |
 | `--open` | off | open the default browser once the server is up |
 | `-V, --version` | | |
 | `-h, --help` | | |
@@ -210,7 +213,13 @@ This writes `.zed/tasks.json` with two tasks: **live-serve (5500)** and **live-s
 
 Each HTML page, including directory listings, gets a small script just before `</body>`. The script opens a WebSocket to `/__live/ws` on the same server.
 
-The server watches the folder recursively. It waits until no file has changed for 120 ms, so a build that writes many files causes one reload, not many; during a build that runs longer than 2 seconds it reloads every 2 seconds. It then sends `css` if only stylesheets changed, or `reload` otherwise. Editor temporary files (`a.css~`, Vim swap files, JetBrains safe-write copies, `*.tmp`) are ignored, so saving a stylesheet still swaps it in place. If the server restarts, the script reconnects on its own.
+The server watches the folder recursively. It waits until no file has changed for 120 ms, so a build that writes many files causes one reload, not many; during a build that runs longer than 2 seconds it reloads every 2 seconds. It then sends `css` if only stylesheets changed, or `reload` otherwise. Editor temporary files (`a.css~`, Vim swap files, JetBrains safe-write copies, `*.tmp`) are ignored, so saving a stylesheet still swaps it in place.
+
+Before a reload, the script fetches the page itself and reloads only once that succeeds, retrying every 500 ms. A build that is halfway through never replaces the page you are looking at: not while the page answers 404 or 500, and not while its folder answers with a directory listing because `index.html` is gone for a moment.
+
+If the connection drops (the server restarts, the laptop sleeps), the script reconnects every second. The server tells each new connection a version that changes with every change it announces and every time it starts; the page reloads only if that version differs from the one it had, so a reconnect with nothing new keeps what you typed into the page.
+
+With `--poll`, the server scans the folder every 300 ms instead of waiting for the system's file events, which never arrive from some places: a Windows folder seen from WSL, a Docker volume, a network drive. The scan never enters `node_modules`, `.git` or `--ignore` folders, so their size costs nothing. A burst then ends after 420 ms of quiet instead of 120 ms, since each scan reports only what changed since the last, so a save takes about half a second to show (0.4–0.8 s) instead of about 130 ms.
 
 With `--no-reload`, there is no script and no watcher.
 

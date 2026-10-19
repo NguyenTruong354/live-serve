@@ -1,11 +1,19 @@
 //! Integration tests: a real server on a random port, spoken to over raw TCP (HTTP and WebSocket).
+//! The reload script's own tests run it in Node.js (`NODE`, or `node` on `PATH`). Without it they print
+//! SKIPPED and pass, except on CI (`CI` set), where they fail.
 
+use std::io::{BufRead, Write};
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use live_serve::{Config, serve};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 fn site(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("live-serve-it-{name}-{}", std::process::id()));
@@ -194,15 +202,17 @@ async fn ws_open(port: u16, headers: &str) -> (String, TcpStream) {
     (String::from_utf8_lossy(&head).to_string(), s)
 }
 
-/// Opens a WebSocket to /__live/ws and returns the stream after the handshake.
+/// Opens a WebSocket to /__live/ws and returns the stream after the handshake and the version token.
 async fn ws_connect(port: u16) -> TcpStream {
-    let (head, s) = ws_open(port, "").await;
+    let (head, mut s) = ws_open(port, "").await;
     assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+    let token = ws_read_frame(&mut s).await;
+    assert!(token.starts_with("id:"), "{token}");
     s
 }
 
 /// Reads one short text frame (server frames are not masked).
-async fn ws_read_text(s: &mut TcpStream) -> String {
+async fn ws_read_frame(s: &mut TcpStream) -> String {
     let mut h = [0u8; 2];
     s.read_exact(&mut h).await.unwrap();
     assert_eq!(h[0] & 0x0f, 1, "text frame");
@@ -210,6 +220,35 @@ async fn ws_read_text(s: &mut TcpStream) -> String {
     let mut payload = vec![0u8; len];
     s.read_exact(&mut payload).await.unwrap();
     String::from_utf8(payload).unwrap()
+}
+
+/// Reads the next change message, skipping version tokens.
+async fn ws_read_text(s: &mut TcpStream) -> String {
+    loop {
+        let text = ws_read_frame(s).await;
+        if !text.starts_with("id:") {
+            return text;
+        }
+    }
+}
+
+#[tokio::test]
+async fn sends_a_version_token_on_connect_and_after_each_change() {
+    let root = site("token");
+    let port = start(root.clone()).await;
+    let (_, mut ws) = ws_open(port, "").await;
+    let first = ws_read_frame(&mut ws).await;
+    assert!(first.starts_with("id:") && first.ends_with(".0"), "{first}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    std::fs::write(root.join("app.js"), "console.log(2)").unwrap();
+    let change = tokio::time::timeout(Duration::from_secs(5), ws_read_frame(&mut ws)).await.expect("change");
+    assert_eq!(change, "reload");
+    let next = ws_read_frame(&mut ws).await;
+    assert_eq!(next, first.replace(".0", ".1"), "same run, one change later");
+
+    let (_, mut other) = ws_open(start(root).await, "").await;
+    let other = ws_read_frame(&mut other).await;
+    assert_ne!(other.split('.').next(), first.split('.').next(), "another run, another token");
 }
 
 /// Every message that arrives until none comes for `quiet`.
@@ -379,4 +418,310 @@ async fn serves_whole_files_and_head_requests() {
     assert!(text.starts_with("http/1.1 200"), "{text}");
     assert!(text.contains("content-length: 3000000"), "{text}");
     assert!(text.ends_with("\r\n\r\n"), "no body for HEAD");
+}
+
+
+#[tokio::test]
+async fn polling_finds_changes_and_still_ignores_node_modules() {
+    let root = site("poll");
+    let mut cfg = Config::new(root.clone());
+    cfg.poll = true;
+    let port = start_with(cfg).await;
+    let mut ws = ws_connect(port).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    std::fs::write(root.join("node_modules").join("x.js"), "x").unwrap();
+    let got = tokio::time::timeout(Duration::from_millis(1200), ws_read_text(&mut ws)).await;
+    assert!(got.is_err(), "no message for node_modules");
+
+    let written = std::time::Instant::now();
+    std::fs::write(root.join("app.js"), "console.log(2)").unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(5), ws_read_text(&mut ws)).await.expect("message within 5 s");
+    // Polling waits DEBOUNCE + POLL_INTERVAL (420 ms) for quiet; file events only DEBOUNCE (120 ms).
+    assert!(written.elapsed() >= Duration::from_millis(400), "{:?}: not the polling path", written.elapsed());
+    let mut messages = vec![first];
+    messages.extend(ws_read_all(&mut ws, Duration::from_millis(1500)).await);
+    assert_eq!(messages, ["reload"]);
+}
+
+/// Forwards connections to a server and can cut them all, refuse new ones, or switch to another
+/// server: what the page sees when the server stops and starts again.
+struct Proxy {
+    port: u16,
+    to: Arc<AtomicU16>,
+    down: Arc<AtomicBool>,
+    connections: Arc<Mutex<Vec<JoinHandle<()>>>>,
+}
+
+impl Proxy {
+    async fn start(to: u16) -> Proxy {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = Proxy {
+            port: listener.local_addr().unwrap().port(),
+            to: Arc::new(AtomicU16::new(to)),
+            down: Arc::new(AtomicBool::new(false)),
+            connections: Arc::new(Mutex::new(Vec::new())),
+        };
+        let (to, down, list) = (proxy.to.clone(), proxy.down.clone(), proxy.connections.clone());
+        tokio::spawn(async move {
+            while let Ok((mut inbound, _)) = listener.accept().await {
+                if down.load(Ordering::SeqCst) {
+                    continue;
+                }
+                let to = to.load(Ordering::SeqCst);
+                let task = tokio::spawn(async move {
+                    if let Ok(mut outbound) = TcpStream::connect(("127.0.0.1", to)).await {
+                        let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                    }
+                });
+                list.lock().unwrap().push(task);
+            }
+        });
+        proxy
+    }
+
+    /// Closes every open connection.
+    fn cut(&self) {
+        for task in self.connections.lock().unwrap().drain(..) {
+            task.abort();
+        }
+    }
+
+    /// While down, new connections are closed right away.
+    fn set_down(&self, down: bool) {
+        self.down.store(down, Ordering::SeqCst);
+    }
+
+    /// New connections go to the server on `port`.
+    fn retarget(&self, port: u16) {
+        self.to.store(port, Ordering::SeqCst);
+    }
+}
+
+/// Stands in for the browser: `location.reload()` prints "reload" and exits; the page's socket
+/// prints "open" and "message <text>", its fetches "fetch <status>" (plus " listing" for a
+/// directory listing) or "fetch failed".
+const BROWSER: &str = r#"const href = process.argv[2], url = new URL(href);
+globalThis.location = { protocol: url.protocol, host: url.host, href, reload() { console.log("reload"); process.exit(0); } };
+globalThis.document = { querySelectorAll: () => [] };
+const realFetch = fetch;
+globalThis.fetch = (...args) => realFetch(...args).then(
+  (r) => { console.log("fetch " + r.status + (r.headers.get("x-live-serve") === "listing" ? " listing" : "")); return r; },
+  (e) => { console.log("fetch failed"); throw e; });
+globalThis.WebSocket = class extends WebSocket {
+  constructor(u) {
+    super(u);
+    this.addEventListener("open", () => console.log("open"));
+    this.addEventListener("message", (e) => console.log("message " + e.data));
+  }
+};
+"#;
+
+/// The reload script of a served page, running in Node.js; killed on drop.
+struct Page {
+    child: Child,
+    lines: mpsc::UnboundedReceiver<String>,
+}
+
+impl Page {
+    /// Runs the script of the page at `path` on `port` as if the page were `http://127.0.0.1:{location_port}{path}`.
+    /// Without Node.js 20.10+ this is None and the test passes with a SKIPPED note, except on CI (`CI` set),
+    /// where it fails.
+    async fn open(port: u16, path: &str, location_port: u16) -> Option<Page> {
+        let node = std::env::var("NODE").unwrap_or_else(|_| "node".into());
+        let check = Command::new(&node)
+            .args(["--experimental-websocket", "-e", "process.exit(typeof WebSocket === 'function' ? 0 : 1)"])
+            .output();
+        if !check.is_ok_and(|o| o.status.success()) {
+            assert!(std::env::var_os("CI").is_none(), "CI needs Node.js 20.10+ for this test: set NODE or put node on PATH");
+            // Straight to stderr: the test harness would hide eprintln! output of a passing test.
+            let _ = writeln!(std::io::stderr(), "SKIPPED: this test needs Node.js 20.10+; set NODE or put node on PATH");
+            return None;
+        }
+        let (_, html) = get(port, path).await;
+        // The injected script, not one of the page's own (a listing has its filter box script).
+        let marker = html.find("/__live/ws").expect("script injected");
+        let start = html[..marker].rfind("<script>").unwrap() + "<script>".len();
+        let end = html[start..].find("</script>").unwrap() + start;
+        let file = std::env::temp_dir().join(format!("live-serve-page-{}-{location_port}.cjs", std::process::id()));
+        std::fs::write(&file, format!("{BROWSER}{}", &html[start..end])).unwrap();
+
+        let mut child = Command::new(&node)
+            .arg("--experimental-websocket")
+            .arg(&file)
+            .arg(format!("http://127.0.0.1:{location_port}{path}"))
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (tx, lines) = mpsc::unbounded_channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                let _ = tx.send(line);
+            }
+        });
+        Some(Page { child, lines })
+    }
+
+    /// Every line up to and including the first that `wanted` accepts, which must come within 5 s
+    /// (in all: a page retrying every 500 ms prints a line each time).
+    async fn until_line(&mut self, what: &str, wanted: impl Fn(&str) -> bool) -> Vec<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut seen = Vec::new();
+        loop {
+            match tokio::time::timeout_at(deadline, self.lines.recv()).await {
+                Ok(Some(line)) => {
+                    let done = wanted(&line);
+                    seen.push(line);
+                    if done {
+                        return seen;
+                    }
+                }
+                _ => panic!("no {what} within 5 s; got {seen:?}"),
+            }
+        }
+    }
+
+    /// Every line up to and including `expected`.
+    async fn until(&mut self, expected: &str) -> Vec<String> {
+        self.until_line(&format!("{expected:?}"), |line| line == expected).await
+    }
+
+    /// Every line up to and including the next version token.
+    async fn until_token(&mut self) -> Vec<String> {
+        self.until_line("version token", |line| line.starts_with("message id:")).await
+    }
+
+    /// The lines printed so far, without waiting.
+    fn printed(&mut self) -> Vec<String> {
+        std::iter::from_fn(|| self.lines.try_recv().ok()).collect()
+    }
+}
+
+impl Drop for Page {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+    }
+}
+
+/// The line before the last, which comes right before "reload".
+fn before_last(lines: &[String]) -> &str {
+    lines.len().checked_sub(2).map_or("", |at| &lines[at])
+}
+
+#[tokio::test]
+async fn reconnecting_without_a_change_keeps_the_page() {
+    let port = start(site("reconnect")).await;
+    let proxy = Proxy::start(port).await;
+    let Some(mut page) = Page::open(port, "/", proxy.port).await else { return };
+    page.until_token().await;
+
+    proxy.cut();
+    page.until("open").await;
+    page.until_token().await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(page.printed(), Vec::<String>::new(), "same token: no fetch, no reload");
+}
+
+#[tokio::test]
+async fn reloads_after_a_restart() {
+    let root = site("restart");
+    let first = start(root.clone()).await;
+    let proxy = Proxy::start(first).await;
+    let Some(mut page) = Page::open(first, "/", proxy.port).await else { return };
+    page.until_token().await;
+
+    // Another run of the server on the same files, with nothing changed.
+    proxy.retarget(start(root).await);
+    proxy.cut();
+    let lines = page.until("reload").await;
+    assert_eq!(before_last(&lines), "fetch 200", "{lines:?}");
+}
+
+#[tokio::test]
+async fn reloads_after_a_change_made_while_disconnected() {
+    let root = site("offline");
+    let port = start(root.clone()).await;
+    let proxy = Proxy::start(port).await;
+    let Some(mut page) = Page::open(port, "/", proxy.port).await else { return };
+    page.until_token().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    proxy.set_down(true);
+    proxy.cut();
+    std::fs::write(root.join("app.js"), "console.log(2)").unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let offline = page.printed();
+    assert!(!offline.iter().any(|l| l.starts_with("message") || l == "reload"), "it was offline: {offline:?}");
+
+    proxy.set_down(false);
+    let lines = page.until("reload").await;
+    assert_eq!(before_last(&lines), "fetch 200", "{lines:?}");
+}
+
+#[tokio::test]
+async fn reloads_only_once_the_page_works_again() {
+    let root = site("broken");
+    std::fs::write(root.join("page.html"), "<html><body>v1</body></html>").unwrap();
+    let port = start(root.clone()).await;
+    let Some(mut page) = Page::open(port, "/page.html", port).await else { return };
+    page.until_token().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // A build that deleted the page and keeps writing: every change sends "reload".
+    std::fs::remove_file(root.join("page.html")).unwrap();
+    page.until("fetch 404").await;
+    for i in 0..3 {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::fs::write(root.join("app.js"), format!("// {i}")).unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let waiting = page.printed();
+    assert!(!waiting.iter().any(|l| l == "reload"), "never reloads into a 404: {waiting:?}");
+    let fetches: Vec<&String> = waiting.iter().filter(|l| l.starts_with("fetch")).collect();
+    assert!(fetches.iter().all(|l| *l == "fetch 404"), "{waiting:?}");
+    // One retry every 500 ms over 1.6 s; the later reload messages start no second loop.
+    assert!((1..=4).contains(&fetches.len()), "{waiting:?}");
+
+    std::fs::write(root.join("page.html"), "<html><body>v2</body></html>").unwrap();
+    let lines = page.until("reload").await;
+    assert_eq!(before_last(&lines), "fetch 200", "{lines:?}");
+}
+
+#[tokio::test]
+async fn waits_while_the_page_would_be_a_listing() {
+    let root = site("wiped");
+    let port = start(root.clone()).await;
+    let Some(mut page) = Page::open(port, "/", port).await else { return };
+    page.until_token().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // A build that wiped its output folder: "/" answers 200, but with a directory listing.
+    std::fs::remove_file(root.join("index.html")).unwrap();
+    page.until("fetch 200 listing").await;
+    for i in 0..2 {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::fs::write(root.join("app.js"), format!("// {i}")).unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let waiting = page.printed();
+    assert!(!waiting.iter().any(|l| l == "reload"), "never reloads into a listing: {waiting:?}");
+    assert!(waiting.iter().filter(|l| l.starts_with("fetch")).all(|l| l == "fetch 200 listing"), "{waiting:?}");
+
+    std::fs::write(root.join("index.html"), "<html><body>v2</body></html>").unwrap();
+    let lines = page.until("reload").await;
+    assert_eq!(before_last(&lines), "fetch 200", "{lines:?}");
+}
+
+#[tokio::test]
+async fn a_listing_reloads_into_a_listing() {
+    let root = site("listed");
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+    let port = start(root.clone()).await;
+    let Some(mut page) = Page::open(port, "/docs/", port).await else { return };
+    page.until_token().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    std::fs::write(root.join("docs").join("new.txt"), "n").unwrap();
+    let lines = page.until("reload").await;
+    assert_eq!(before_last(&lines), "fetch 200 listing", "{lines:?}");
 }

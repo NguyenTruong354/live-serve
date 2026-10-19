@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2 (2026-10-19)
+
+- `--poll` scans the folder every 300 ms instead of waiting for file system events, which never arrive from WSL, Docker volumes or network drives. Ignored folders such as `node_modules` are never entered.
+- A reload waits until the page works again: the script fetches it first and retries every 500 ms, so a build that answers 404 or 500 for a moment, or shows a folder listing in place of `index.html`, no longer replaces the page you are looking at.
+- Reconnecting after a dropped connection reloads only if something changed meanwhile or the server restarted; otherwise the page, and what you typed into it, stays.
+- Install with Homebrew (`brew install nguyentruong354/tap/live-serve`) or Scoop (the `nguyentruong354` bucket).
+
 ## 0.3.1 (2026-10-19)
 
 - `cargo binstall live-serve` installs the prebuilt release binary.

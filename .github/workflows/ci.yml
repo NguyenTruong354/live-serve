@@ -15,5 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      # The reload script's tests run it in Node.js; with CI set they fail rather than skip without it.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
       - run: cargo test --locked
       - run: cargo build --release --locked
