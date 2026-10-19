@@ -236,15 +236,20 @@ async fn ws_read_text(s: &mut TcpStream) -> String {
 async fn sends_a_version_token_on_connect_and_after_each_change() {
     let root = site("token");
     let port = start(root.clone()).await;
+    // macOS's FSEvents may still report the files `site` wrote just before the server started, which
+    // counts as a change: wait for that burst to pass, and compare counts instead of expecting 0.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     let (_, mut ws) = ws_open(port, "").await;
     let first = ws_read_frame(&mut ws).await;
-    assert!(first.starts_with("id:") && first.ends_with(".0"), "{first}");
+    let (boot, count) = first.rsplit_once('.').expect("id:<boot>.<changes>");
+    assert!(boot.starts_with("id:"), "{first}");
+    let count: u64 = count.parse().expect("a count");
     tokio::time::sleep(Duration::from_millis(300)).await;
     std::fs::write(root.join("app.js"), "console.log(2)").unwrap();
     let change = tokio::time::timeout(Duration::from_secs(5), ws_read_frame(&mut ws)).await.expect("change");
     assert_eq!(change, "reload");
     let next = ws_read_frame(&mut ws).await;
-    assert_eq!(next, first.replace(".0", ".1"), "same run, one change later");
+    assert_eq!(next, format!("{boot}.{}", count + 1), "same run, one change later");
 
     let (_, mut other) = ws_open(start(root).await, "").await;
     let other = ws_read_frame(&mut other).await;
