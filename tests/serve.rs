@@ -357,3 +357,26 @@ async fn no_reload_serves_plain_html() {
     let (head, _) = get(port, "/__live/ws").await;
     assert!(head.starts_with("http/1.1 404"));
 }
+
+#[tokio::test]
+async fn serves_whole_files_and_head_requests() {
+    let root = site("whole");
+    let big: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(root.join("bundle.js"), &big).unwrap();
+    let port = start(root).await;
+
+    let (head, body) = request_raw(port, "/bundle.js", "localhost", "").await;
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+    assert!(head.contains("content-type: text/javascript"));
+    assert!(head.contains("cache-control: no-store"));
+    assert_eq!(body, big, "every byte, in order");
+
+    let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    s.write_all(b"HEAD /bundle.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut buf = Vec::new();
+    s.read_to_end(&mut buf).await.unwrap();
+    let text = String::from_utf8_lossy(&buf).to_ascii_lowercase();
+    assert!(text.starts_with("http/1.1 200"), "{text}");
+    assert!(text.contains("content-length: 3000000"), "{text}");
+    assert!(text.ends_with("\r\n\r\n"), "no body for HEAD");
+}

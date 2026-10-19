@@ -284,6 +284,14 @@ pub fn strip_verbatim(path: &Path) -> PathBuf {
     }
 }
 
+/// Files up to this size, of a known type and without a Range request, are read in one trip to the
+/// blocking pool into a buffer of their exact size. Streaming a 5 MB bundle in tower-http's 64 KB
+/// steps took ~80 trips (17 ms); in one read it is about as fast as Node's live-server.
+const WHOLE_FILE_MAX: u64 = 16 * 1024 * 1024;
+
+/// Bytes read per step when streaming bigger files or byte ranges (media seeking).
+const FILE_CHUNK: usize = 256 * 1024;
+
 /// How many ports past the requested one `bind` tries when it is taken.
 const PORT_ATTEMPTS: u16 = 20;
 
@@ -393,8 +401,15 @@ async fn file_handler(State(state): State<AppState>, request: Request) -> Respon
         };
     }
 
-    // Everything else streams from disk, with Range (media seeking), HEAD and If-Modified-Since.
-    match ServeFile::new(&path).oneshot(request).await {
+    if let Some(kind) = content_type(&path)
+        && !request.headers().contains_key(header::RANGE)
+        && let Some(bytes) = read_whole(&path).await
+    {
+        return (StatusCode::OK, [(header::CONTENT_TYPE, HeaderValue::from_static(kind))], bytes).into_response();
+    }
+
+    // Big files, ranges (media seeking) and unknown types stream from disk via tower-http.
+    match ServeFile::new(&path).with_buf_chunk_size(FILE_CHUNK).oneshot(request).await {
         Ok(response) => {
             let mut response = response.map(Body::new);
             if let Some(kind) = content_type(&path) {
@@ -404,6 +419,25 @@ async fn file_handler(State(state): State<AppState>, request: Request) -> Respon
         }
         Err(_) => not_found(),
     }
+}
+
+/// The whole file in one blocking trip, if it is at most WHOLE_FILE_MAX bytes.
+async fn read_whole(path: &Path) -> Option<Vec<u8>> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        let mut file = std::fs::File::open(&path).ok()?;
+        let len = file.metadata().ok()?.len();
+        if len > WHOLE_FILE_MAX {
+            return None;
+        }
+        let mut bytes = Vec::with_capacity(len as usize);
+        file.read_to_end(&mut bytes).ok()?;
+        Some(bytes)
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Reads and renders a listing in one go on the blocking pool: one task for the whole folder
