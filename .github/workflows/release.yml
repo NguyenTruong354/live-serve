@@ -28,7 +28,7 @@ jobs:
             archive: zip
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -49,6 +49,6 @@ jobs:
           New-Item -ItemType Directory $name | Out-Null
           Copy-Item target/${{ matrix.target }}/release/live-serve.exe, README.md, LICENSE $name
           Compress-Archive -Path $name -DestinationPath "$name.zip"
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: live-serve-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive }}
