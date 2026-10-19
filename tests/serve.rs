@@ -334,12 +334,30 @@ async fn one_reload_for_a_burst_of_writes() {
     let mut ws = ws_connect(port).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     // A build writing a file every 20 ms for 600 ms: shorter gaps than the debounce, longer than it in all.
-    for i in 0..30 {
-        std::fs::write(root.join(format!("chunk{}.js", i % 5)), format!("// {i}")).unwrap();
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    // It writes from its own thread and measures the gaps: on a busy CI machine one can still stretch past
+    // the 120 ms debounce, and then a second reload is the right answer, not a failure.
+    let dir = root.clone();
+    let gaps = std::thread::spawn(move || {
+        let mut gaps = Vec::new();
+        let mut last = std::time::Instant::now();
+        for i in 0..30 {
+            std::fs::write(dir.join(format!("chunk{}.js", i % 5)), format!("// {i}")).unwrap();
+            gaps.push(last.elapsed());
+            last = std::time::Instant::now();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        gaps
+    })
+    .join()
+    .unwrap();
     let messages = ws_read_all(&mut ws, Duration::from_secs(1)).await;
-    assert_eq!(messages, ["reload"]);
+    let stretched = gaps.iter().skip(1).filter(|g| **g >= Duration::from_millis(110)).count();
+    assert!(messages.iter().all(|m| m == "reload"), "{messages:?}");
+    if stretched == 0 {
+        assert_eq!(messages, ["reload"]);
+    } else {
+        assert!(!messages.is_empty() && messages.len() <= stretched + 1, "{messages:?} with {stretched} long gaps");
+    }
 }
 
 #[tokio::test]
