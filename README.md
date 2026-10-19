@@ -3,18 +3,9 @@
 [![CI](https://github.com/NguyenTruong354/live-serve/actions/workflows/ci.yml/badge.svg)](https://github.com/NguyenTruong354/live-serve/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/live-serve.svg)](https://crates.io/crates/live-serve)
 
-A tiny static dev server that reloads the page when files change. Think VS Code's Live Server, as a single ~1 MB binary with no Node.js. Run it from the command line, from VS Code or from Zed, for any project on Windows, macOS and Linux.
+A tiny static dev server that reloads the page when files change. Think VS Code's Live Server, as a single 1.4 MB binary with no Node.js. Run it from the command line, from VS Code or from Zed, for any project on Windows, macOS and Linux.
 
-```
-$ live-serve
-live-serve: starting in /home/me/my-site
-live-serve: http://127.0.0.1:5500/
-```
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NguyenTruong354/live-serve/main/docs/images/listing-dark.png">
-  <img alt="A folder listing served by live-serve: clickable path, icons by file type, size and modified columns, and a filter box" src="https://raw.githubusercontent.com/NguyenTruong354/live-serve/main/docs/images/listing-light.png" width="720">
-</picture>
+<img alt="Saving style.css swaps the stylesheet without a reload (the page's load time stays the same); saving index.html reloads the page" src="https://raw.githubusercontent.com/NguyenTruong354/live-serve/main/docs/images/demo.gif" width="960">
 
 ## Why live-serve
 
@@ -26,7 +17,7 @@ Compared with [`live-server`](https://www.npmjs.com/package/live-server), the pa
 | HTML page with the reload script | **0.54 ms** | 0.86 ms |
 | First response after start | **45 ms** | ~1.5 s |
 | Memory | **10 MB** | ~240 MB |
-| Install | one ~1 MB binary | Node.js + packages |
+| Install | one 1.4 MB binary | Node.js + packages |
 
 Static files cost the same for both; the difference is everything around them. It also does a few things live-server does not:
 
@@ -85,6 +76,11 @@ Troubleshooting:
 - **Busy port? It moves on.** If port 5500 is taken, it uses the next free port. `--strict-port` turns this off.
 - **Safe by default.** It binds to `127.0.0.1` and refuses paths that leave the served folder (`..`, encoded `..`, `\`, drive letters, symlinks pointing outside). Other websites cannot read your files: there is no CORS header unless you pass `--cors`, requests for unknown host names are refused (this stops DNS rebinding), and the reload WebSocket only accepts local pages. Dotfiles such as `.env` and `.git` are hidden unless you pass `--dotfiles`.
 - **Editor tasks in one command** for VS Code and Zed (`live-serve init`).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NguyenTruong354/live-serve/main/docs/images/listing-dark.png">
+  <img alt="A folder listing served by live-serve: clickable path, icons by file type, size and modified columns, and a filter box" src="https://raw.githubusercontent.com/NguyenTruong354/live-serve/main/docs/images/listing-light.png" width="720">
+</picture>
 
 ## Install
 
