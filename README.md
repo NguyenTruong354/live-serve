@@ -1,6 +1,7 @@
 # live-serve
 
 [![CI](https://github.com/NguyenTruong354/live-serve/actions/workflows/ci.yml/badge.svg)](https://github.com/NguyenTruong354/live-serve/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/live-serve.svg)](https://crates.io/crates/live-serve)
 
 A tiny static dev server that reloads the page when files change. Think VS Code's Live Server, as a single ~1 MB binary with no Node.js. Run it from the command line, from VS Code or from Zed, for any project on Windows, macOS and Linux.
 
@@ -12,7 +13,11 @@ live-serve: http://127.0.0.1:5500/
 
 ## Quick start
 
-1. **Install.** Download the archive for your platform from [Releases](https://github.com/NguyenTruong354/live-serve/releases), unpack it, and put `live-serve` (`live-serve.exe` on Windows) on your `PATH`. If you have Rust, you can instead run `cargo install --git https://github.com/NguyenTruong354/live-serve`.
+1. **Install** with [Rust](https://rustup.rs):
+   ```
+   cargo install live-serve
+   ```
+   No Rust? Download the archive for your platform from [Releases](https://github.com/NguyenTruong354/live-serve/releases), unpack it, and put `live-serve` (`live-serve.exe` on Windows) on your `PATH`.
 2. **Run it in your site's folder:**
    ```
    live-serve --open
@@ -54,13 +59,21 @@ Troubleshooting:
 
 ## Install
 
-**From source** (any platform with [Rust](https://rustup.rs)):
+**From [crates.io](https://crates.io/crates/live-serve)** (any platform with [Rust](https://rustup.rs)):
+
+```
+cargo install live-serve
+```
+
+To upgrade later, run the same command again.
+
+**Latest unreleased code**, straight from GitHub:
 
 ```
 cargo install --git https://github.com/NguyenTruong354/live-serve
 ```
 
-To install from a checkout of this repository instead, run `cargo install --path .`.
+From a checkout of this repository, run `cargo install --path .`.
 
 **Prebuilt binaries:** download the archive for your platform from [Releases](https://github.com/NguyenTruong354/live-serve/releases), unpack it, and put `live-serve` (or `live-serve.exe`) somewhere on your `PATH`.
 
