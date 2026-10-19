@@ -1,6 +1,6 @@
 [package]
 name = "live-serve"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "A tiny static dev server that reloads the page when files change; works from the CLI, VS Code and Zed"
 license = "MIT"

@@ -10,6 +10,37 @@ live-serve: starting in /home/me/my-site
 live-serve: http://127.0.0.1:5500/
 ```
 
+## Quick start
+
+1. **Install.** Download the archive for your platform from [Releases](https://github.com/NguyenTruong354/live-serve/releases), unpack it, and put `live-serve` (`live-serve.exe` on Windows) on your `PATH`. If you have Rust, you can instead run `cargo install --git https://github.com/NguyenTruong354/live-serve`.
+2. **Run it in your site's folder:**
+   ```
+   live-serve --open
+   ```
+   Edit a file and the page reloads. Edit CSS and only the stylesheets swap. Stop with `Ctrl+C`.
+3. **Optional: add an editor task** to the project, then start the server from the editor:
+   ```
+   live-serve init vscode     # Terminal → Run Task → live-serve (5500)
+   live-serve init zed        # task: spawn → live-serve (5500)
+   ```
+
+Common cases:
+
+| You want to | Run |
+|---|---|
+| serve a built single-page app | `live-serve ./dist --spa` |
+| open it on your phone over Wi-Fi | `live-serve --host 0.0.0.0`, then `http://<your-ip>:5500` |
+| use a custom name (hosts file, tunnel) | `live-serve --allow-host myapp.test` |
+| let pages on other origins `fetch` from it | `live-serve --cors` |
+| stop reloads from a busy build folder | `live-serve --ignore dist,coverage` |
+
+Troubleshooting:
+
+- **403 "host name is not allowed":** you opened it under a name other than `localhost` or an IP address. Add `--allow-host <name>`.
+- **It started on 5501:** something else, often VS Code's Live Server, already uses 5500.
+- **The editor cannot find `live-serve`:** restart the editor so it picks up the new `PATH`.
+- **macOS refuses to open it:** the binary is not signed. Run `xattr -d com.apple.quarantine live-serve` once.
+
 ## Features
 
 - **Live reload.** Saving a file reloads open pages. Saving only CSS swaps the stylesheets in place, without a full reload.
@@ -26,7 +57,7 @@ live-serve: http://127.0.0.1:5500/
 **From source** (any platform with [Rust](https://rustup.rs)):
 
 ```
-cargo install live-serve
+cargo install --git https://github.com/NguyenTruong354/live-serve
 ```
 
 To install from a checkout of this repository instead, run `cargo install --path .`.
