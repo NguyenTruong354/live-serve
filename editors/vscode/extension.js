@@ -7,10 +7,15 @@ const vscode = require('vscode');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { findUrl, serveArgs, pageUrl, binaryName } = require('./lib');
+const { findUrl, urlPort, serveArgs, folderProblem, pageUrl, binaryName, singleFlight, chooseFolder } = require('./lib');
 
-/** The running server: { child, root, url }; url is null until it listens. */
+/**
+ * The running server: { child, root, url, ready, stopping }. url is null until it listens; ready
+ * resolves with the server once it listens, or null if it never does; stopping is set by stop().
+ */
 let server = null;
+/** The last error shown, for the extension's own tests. */
+let lastError = null;
 let status;
 let output;
 let extensionPath;
@@ -40,6 +45,11 @@ function activate(context) {
     state: () => server && { url: server.url, root: server.root, pid: server.child.pid },
     statusText: () => status.text,
     setOpener: (fn) => (opener = fn),
+    takeError: () => {
+      const error = lastError;
+      lastError = null;
+      return error;
+    },
   };
 }
 
@@ -55,27 +65,32 @@ function showStatus() {
     status.text = '$(loading~spin) Starting…';
     status.tooltip = 'live-serve is starting';
   } else {
-    status.text = `$(circle-slash) Port: ${new URL(server.url).port}`;
+    status.text = `$(circle-slash) Port: ${urlPort(server.url)}`;
     status.tooltip = `live-serve at ${server.url} (${server.root})\nClick to stop`;
   }
   status.command = 'liveServe.toggle';
 }
 
-/** The folder to serve: the workspace folder of `uri` or of the active editor, plus the `root` setting. */
+/**
+ * The folder to serve, { root, scope }: the workspace folder of `uri` or of the active editor, plus the
+ * `root` setting; scope is the URI its settings are read for. Null when there is none, or when the
+ * folder pick was dismissed.
+ */
 async function pickRoot(uri) {
   const target = uri || vscode.window.activeTextEditor?.document.uri;
-  let folder = target && vscode.workspace.getWorkspaceFolder(target);
-  const folders = vscode.workspace.workspaceFolders || [];
-  if (!folder && folders.length === 1) folder = folders[0];
-  if (!folder && folders.length > 1) folder = await vscode.window.showWorkspaceFolderPick({ placeHolder: 'Folder to serve' });
+  const own = target && vscode.workspace.getWorkspaceFolder(target);
+  const pick = () => vscode.window.showWorkspaceFolderPick({ placeHolder: 'Folder to serve' });
+  const chosen = await chooseFolder(own, vscode.workspace.workspaceFolders || [], pick);
+  if (!chosen) return null;
+  const { folder } = chosen;
   if (!folder) {
     // A single file opened without a folder: serve the folder it is in.
-    if (target?.scheme === 'file') return path.dirname(target.fsPath);
-    vscode.window.showErrorMessage('live-serve: open a folder first.');
+    if (target?.scheme === 'file') return { root: path.dirname(target.fsPath), scope: target };
+    showError('live-serve: open a folder first.');
     return null;
   }
   const sub = vscode.workspace.getConfiguration('liveServe', folder.uri).get('root') || '';
-  return path.resolve(folder.uri.fsPath, sub);
+  return { root: path.resolve(folder.uri.fsPath, sub), scope: folder.uri };
 }
 
 /** The binary to run: the `binaryPath` setting, else the bundled one, else `live-serve` on PATH. */
@@ -97,23 +112,45 @@ function binary() {
 
 /**
  * Starts the server (if it is not running) and resolves with it once it listens, or null on failure.
- * Then opens the browser at `uri`'s page, or the root, when `browser` (the openBrowser setting) is on.
+ * Then opens the browser at its root when `browser` (the openBrowser setting) is on. Calls made while
+ * it starts share that start, so two clicks never start two servers.
  */
-async function start(uri, browser) {
-  if (server) return server;
-  const root = await pickRoot(uri);
-  if (!root) return null;
-  const cfg = vscode.workspace.getConfiguration('liveServe', vscode.Uri.file(root));
+function start(uri, browser) {
+  return server ? server.ready : launchOnce(uri, browser);
+}
+
+/** Picks the folder and runs the server for it; see start(). */
+async function launch(uri, browser) {
+  const picked = await pickRoot(uri);
+  if (!picked) return null;
+  const { root, scope } = picked;
+  const problem = folderProblem(root);
+  if (problem) {
+    showError(problem);
+    return null;
+  }
+  const cfg = vscode.workspace.getConfiguration('liveServe', scope);
   if (browser === undefined) browser = cfg.get('openBrowser');
   const exe = binary();
   const args = serveArgs(root, { port: cfg.get('port'), host: cfg.get('host'), extra: cfg.get('args') });
   output.appendLine(`> ${exe} ${args.join(' ')}`);
 
-  const child = spawn(exe, args, { cwd: root, windowsHide: true });
-  const mine = { child, root, url: null };
+  // stdin stays an open pipe while the server runs: it exits once that closes (--exit-on-stdin-close),
+  // also when the extension host dies without stopping it.
+  const child = spawn(exe, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  child.stdin.on('error', () => {});
+  const mine = { child, root, url: null, ready: null, stopping: false };
+  mine.ready = watch(mine, browser);
   server = mine;
   showStatus();
+  return mine.ready;
+}
 
+const launchOnce = singleFlight(launch);
+
+/** Follows the server's output and exit; resolves with it once it listens, or null. */
+function watch(mine, browser) {
+  const { child } = mine;
   return new Promise((resolve) => {
     let printed = '';
     let done = false;
@@ -124,14 +161,14 @@ async function start(uri, browser) {
     child.stdout.on('data', (data) => {
       const text = data.toString();
       output.append(text);
-      if (mine.url) return;
+      if (mine.url || mine.stopping) return;
       printed += text;
       const url = findUrl(printed);
       if (!url) return;
       mine.url = url;
       if (server === mine) showStatus();
       settleOnce(mine);
-      if (browser) openUrl(uri ? pageUrl(url, root, uri.fsPath) || url : url);
+      if (browser) openUrl(url);
     });
     child.stderr.on('data', (data) => output.append(data.toString()));
     child.on('error', (error) => {
@@ -142,19 +179,19 @@ async function start(uri, browser) {
         error.code === 'ENOENT'
           ? 'live-serve: the server binary was not found. Reinstall the extension, or set liveServe.binaryPath.'
           : `live-serve could not start: ${error.message}`;
-      vscode.window.showErrorMessage(message);
+      if (!mine.stopping) showError(message);
       settleOnce(null);
     });
     child.on('exit', (code, signal) => {
       output.appendLine(`live-serve stopped (${signal || `exit code ${code}`})`);
       if (server === mine) server = null;
       showStatus();
-      if (!mine.url) {
-        vscode.window.showErrorMessage('live-serve stopped before it was ready.', 'Show Output').then((choice) => {
+      if (!mine.url && !mine.stopping) {
+        showError('live-serve stopped before it was ready.', 'Show Output').then((choice) => {
           if (choice) output.show();
         });
-        settleOnce(null);
       }
+      settleOnce(null);
     });
   });
 }
@@ -163,6 +200,7 @@ async function start(uri, browser) {
 function stop() {
   if (!server) return Promise.resolve();
   const { child } = server;
+  server.stopping = true; // so its exit, also before it listens, is not reported as a failure
   server = null;
   showStatus();
   return new Promise((resolve) => {
@@ -172,21 +210,28 @@ function stop() {
   });
 }
 
-/** Opens `uri` (or the active file) in the browser, starting the server first when needed. */
+/**
+ * Opens `uri` (or the active file) in the browser, whatever openBrowser says, once the server listens;
+ * starts it first when needed. A server started here for a file outside its folder opens at its root.
+ */
 async function open(uri) {
   const file = uri || vscode.window.activeTextEditor?.document.uri;
   if (!file || file.scheme !== 'file') return;
-  if (!server) {
-    await start(file, true); // asked for this page, so it opens whatever openBrowser says
+  const running = server !== null;
+  const ready = await start(file, false);
+  if (!ready) return;
+  const url = pageUrl(ready.url, ready.root, file.fsPath);
+  if (!url && running) {
+    vscode.window.showWarningMessage(`live-serve: ${path.basename(file.fsPath)} is outside the served folder (${ready.root}).`);
     return;
   }
-  if (!server.url) return;
-  const url = pageUrl(server.url, server.root, file.fsPath);
-  if (!url) {
-    vscode.window.showWarningMessage(`live-serve: ${path.basename(file.fsPath)} is outside the served folder (${server.root}).`);
-    return;
-  }
-  await openUrl(url);
+  await openUrl(url || ready.url);
+}
+
+/** Shows an error message, and keeps it for the extension's own tests. */
+function showError(message, ...items) {
+  lastError = message;
+  return vscode.window.showErrorMessage(message, ...items);
 }
 
 async function openUrl(url) {

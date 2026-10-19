@@ -40,9 +40,10 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "In an untrusted folder, the folder's own settings cannot change the host, the extra options or the binary.",
+      "description": "In an untrusted folder, the folder's own settings cannot change the host, the served folder, the extra options or the binary.",
       "restrictedConfigurations": [
         "liveServe.host",
+        "liveServe.root",
         "liveServe.args",
         "liveServe.binaryPath"
       ]
@@ -104,15 +105,17 @@
       "title": "live-serve",
       "properties": {
         "liveServe.port": {
-          "type": "number",
+          "type": "integer",
           "default": 5500,
-          "minimum": 0,
+          "minimum": 1,
           "maximum": 65535,
+          "scope": "resource",
           "markdownDescription": "Port to serve on. When it is taken, live-serve uses the next free one."
         },
         "liveServe.host": {
           "type": "string",
           "default": "127.0.0.1",
+          "scope": "resource",
           "markdownDescription": "Address to listen on. `0.0.0.0` lets phones on your Wi-Fi open the page."
         },
         "liveServe.root": {
@@ -124,6 +127,7 @@
         "liveServe.openBrowser": {
           "type": "boolean",
           "default": true,
+          "scope": "resource",
           "markdownDescription": "Open the default browser after **Go Live**."
         },
         "liveServe.args": {
@@ -132,6 +136,7 @@
             "type": "string"
           },
           "default": [],
+          "scope": "resource",
           "markdownDescription": "More command-line options, e.g. `[\"--spa\"]` or `[\"--poll\"]`. See [the options](https://github.com/NguyenTruong354/live-serve#command-line)."
         },
         "liveServe.binaryPath": {

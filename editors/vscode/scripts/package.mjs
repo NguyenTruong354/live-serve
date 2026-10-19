@@ -2,14 +2,15 @@
 //
 //   node scripts/package.mjs <vscode-target> <path/to/live-serve[.exe]>
 //
-// vscode-target is one of win32-x64, darwin-arm64, darwin-x64, linux-x64. The package's version must
-// match the crate's, so the extension always ships the server of the same release.
+// vscode-target is one of the TARGETS below. The package's version must match the crate's, so the
+// extension always ships the server of the same release.
 import { execFileSync } from 'node:child_process';
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const TARGETS = ['win32-x64', 'darwin-arm64', 'darwin-x64', 'linux-x64'];
+// The VS Code targets that .github/workflows/release.yml builds (linux-* from the static musl binaries).
+const TARGETS = ['win32-x64', 'win32-arm64', 'darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64'];
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const [target, binary] = process.argv.slice(2);
 if (!TARGETS.includes(target) || !binary) {

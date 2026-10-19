@@ -20,6 +20,15 @@ const get = (url) =>
 
 const refused = (url) => get(url).then(() => false, () => true);
 
+/** Resolves once `check()` is true; fails after 5 s. */
+async function until(check, what) {
+  const end = Date.now() + 5000;
+  while (!check()) {
+    if (Date.now() > end) throw new Error(`still waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 1));
+  }
+}
+
 /** The page's reload socket, once connected; next() is the next change message (tokens skipped). */
 async function socket(port) {
   const ws = new WebSocket(`ws://127.0.0.1:${port}/__live/ws`);
@@ -135,5 +144,50 @@ exports.run = async function run() {
     assert.equal(opened.length, 1, 'page opened even though openBrowser is off');
     assert.equal(new URL(opened[0]).pathname, '/');
     await vscode.commands.executeCommand('liveServe.stop');
+  });
+
+  const run = (...args) => vscode.commands.executeCommand(...args);
+  const starting = () => /Starting/.test(api.statusText());
+
+  await step('clicking Go Live again while it starts cancels it without an error', async () => {
+    api.takeError();
+    const first = run('liveServe.toggle');
+    await until(starting, 'Starting…');
+    await run('liveServe.toggle');
+    assert.ok(!(await first), 'the start was cancelled');
+    assert.equal(api.state(), null);
+    assert.match(api.statusText(), /Go Live/);
+    assert.equal(api.takeError(), null);
+  });
+
+  await step('two Go Live at once start one server', async () => {
+    await Promise.all([run('liveServe.start'), run('liveServe.start')]);
+    assert.ok(api.state()?.url);
+    await run('liveServe.stop');
+    for (const port of [5591, 5592, 5593]) assert.ok(await refused(`http://127.0.0.1:${port}/`), `nothing left on ${port}`);
+  });
+
+  await step('Open with live-serve while it starts opens the page once it listens', async () => {
+    opened.length = 0;
+    const first = run('liveServe.start');
+    await until(starting, 'Starting…');
+    await run('liveServe.open', vscode.Uri.file(path.join(root, 'sub', 'page.html')));
+    assert.equal(opened.length, 1, 'the page opened once the server listened');
+    assert.equal(opened[0], new URL('sub/page.html', api.state().url).href);
+    await first;
+    await run('liveServe.stop');
+  });
+
+  await step('a root folder that does not exist yet is named, not blamed on the binary', async () => {
+    const cfg = vscode.workspace.getConfiguration('liveServe');
+    await cfg.update('root', 'dist', vscode.ConfigurationTarget.Workspace);
+    try {
+      api.takeError();
+      assert.ok(!(await run('liveServe.start')));
+      assert.equal(api.state(), null);
+      assert.equal(api.takeError(), `live-serve: folder ${path.join(root, 'dist')} does not exist.`);
+    } finally {
+      await cfg.update('root', undefined, vscode.ConfigurationTarget.Workspace);
+    }
   });
 };
