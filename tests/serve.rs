@@ -313,6 +313,21 @@ async fn an_editor_save_with_temp_files_still_swaps_css() {
 }
 
 #[tokio::test]
+async fn a_save_through_a_temporary_file_still_swaps_css() {
+    let root = site("atomic");
+    let port = start(root.clone()).await;
+    let mut ws = ws_connect(port).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // What write-file-atomic and similar tools do: write a sibling, then rename it over the file.
+    for (i, temp) in ["style.css.tmp.4242.1792413777242", "style.css.2948423"].into_iter().enumerate() {
+        std::fs::write(root.join(temp), format!("h1{{color:#{i}{i}{i}}}")).unwrap();
+        std::fs::rename(root.join(temp), root.join("style.css")).unwrap();
+        let messages = ws_read_all(&mut ws, Duration::from_secs(1)).await;
+        assert_eq!(messages, ["css"], "{temp}");
+    }
+}
+
+#[tokio::test]
 async fn one_reload_for_a_burst_of_writes() {
     let root = site("burst");
     let port = start(root.clone()).await;

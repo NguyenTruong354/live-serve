@@ -229,10 +229,27 @@ fn is_editor_temp(name: &str) -> bool {
             .any(|suffix| name.ends_with(suffix))
 }
 
+/// Whether `path` is a temporary copy that was renamed over another file of the batch, as tools that
+/// save through a temporary file do: it is in the same folder, named after that file plus a suffix
+/// (`a.css.tmp.4242.1792413777242`, `a.css.2948423`, `.a.css.x8Kq2`), and it no longer exists.
+fn is_renamed_copy(path: &Path, batch: &[PathBuf]) -> bool {
+    let Some(name) = path.file_name().map(|n| n.to_string_lossy()) else { return false };
+    let named_after = |target: &str| {
+        let copy_of = |n: &str| n.strip_prefix(target).is_some_and(|rest| rest.len() > 1 && rest.starts_with('.'));
+        copy_of(&name) || name.strip_prefix('.').is_some_and(copy_of)
+    };
+    batch.iter().any(|other| {
+        other.as_path() != path
+            && other.parent() == path.parent()
+            && other.file_name().is_some_and(|o| named_after(&o.to_string_lossy()))
+    }) && !path.exists()
+}
+
 /// Turns a batch of changed files into one change: only CSS → "css", anything else → "reload";
-/// None when every file is ignored.
+/// None when every file is ignored. Temporary copies renamed over a file of the batch do not count.
 pub fn classify(paths: &[PathBuf], root: &Path, extra: &[String]) -> Option<Change> {
-    let relevant: Vec<&PathBuf> = paths.iter().filter(|p| !is_ignored(p, root, extra)).collect();
+    let relevant: Vec<&PathBuf> =
+        paths.iter().filter(|p| !is_ignored(p, root, extra) && !is_renamed_copy(p, paths)).collect();
     if relevant.is_empty() {
         return None;
     }
@@ -918,6 +935,52 @@ mod tests {
         let root = Path::new("proj");
         let vim_save = vec![root.join("4913"), root.join("a.css~"), root.join("a.css")];
         assert_eq!(classify(&vim_save, root, &[]), Some(Change::Css));
+    }
+
+    /// A folder with a.css, a.css.map, index.html and app.js, for checks that look at what exists.
+    fn saved_site(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("live-serve-save-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        for file in ["a.css", "a.css.map", "index.html", "app.js", "sub/b.css"] {
+            std::fs::write(dir.join(file), "x").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn a_save_through_a_temporary_file_of_css_is_still_css() {
+        let root = saved_site("atomic");
+        // Written next to the file, then renamed over it: gone by the time the batch is classified.
+        for temp in ["a.css.tmp.12345.1792413777242", "a.css.2948423", "a.css.part", ".a.css.x8Kq2"] {
+            let save = vec![root.join(temp), root.join("a.css")];
+            assert_eq!(classify(&save, &root, &[]), Some(Change::Css), "{temp}");
+        }
+        let nested = vec![root.join("sub/b.css.tmp.1.2"), root.join("sub/b.css")];
+        assert_eq!(classify(&nested, &root, &[]), Some(Change::Css));
+    }
+
+    #[test]
+    fn files_that_only_look_like_temporary_copies_still_count() {
+        let root = saved_site("lookalike");
+        // Still on disk: a real file, here a source map written next to the stylesheet.
+        let map = vec![root.join("a.css.map"), root.join("a.css")];
+        assert_eq!(classify(&map, &root, &[]), Some(Change::Reload));
+        // Gone, but not named after anything in the batch: a deleted page.
+        let deleted = vec![root.join("old.html"), root.join("a.css")];
+        assert_eq!(classify(&deleted, &root, &[]), Some(Change::Reload));
+        // Gone and named after a.css, but without the dot: another file.
+        let other = vec![root.join("a.css2"), root.join("a.css")];
+        assert_eq!(classify(&other, &root, &[]), Some(Change::Reload));
+        // Named after a file in another folder.
+        let elsewhere = vec![root.join("sub/a.css.tmp.1.2"), root.join("a.css")];
+        assert_eq!(classify(&elsewhere, &root, &[]), Some(Change::Reload));
+        // A temporary copy of a page is skipped, and the page itself still reloads.
+        let page = vec![root.join("index.html.tmp.1.2"), root.join("index.html")];
+        assert_eq!(classify(&page, &root, &[]), Some(Change::Reload));
+        // The temporary file alone, with nothing renamed over: a file that came and went.
+        let alone = vec![root.join("a.css.tmp.1.2")];
+        assert_eq!(classify(&alone, &root, &[]), Some(Change::Reload));
     }
 
     #[tokio::test]
