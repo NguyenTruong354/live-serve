@@ -1,5 +1,7 @@
 # live-serve
 
+[![CI](https://github.com/NguyenTruong354/live-serve/actions/workflows/ci.yml/badge.svg)](https://github.com/NguyenTruong354/live-serve/actions/workflows/ci.yml)
+
 A tiny static dev server that reloads the page when files change. Think VS Code's Live Server, as a single ~1 MB binary with no Node.js. Run it from the command line, from VS Code or from Zed, for any project on Windows, macOS and Linux.
 
 ```
@@ -29,7 +31,7 @@ cargo install live-serve
 
 To install from a checkout of this repository instead, run `cargo install --path .`.
 
-**Prebuilt binaries:** download the archive for your platform from the GitHub Releases page, unpack it, and put `live-serve` (or `live-serve.exe`) somewhere on your `PATH`.
+**Prebuilt binaries:** download the archive for your platform from [Releases](https://github.com/NguyenTruong354/live-serve/releases), unpack it, and put `live-serve` (or `live-serve.exe`) somewhere on your `PATH`.
 
 ## Command line
 
