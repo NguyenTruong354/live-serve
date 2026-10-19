@@ -18,7 +18,7 @@ live-serve: http://127.0.0.1:5500/
 - **Media friendly.** Files stream from disk, with HTTP Range support so audio and video can seek.
 - **Single-page apps.** With `--spa`, unknown routes serve `/index.html`; missing assets still return 404.
 - **Busy port? It moves on.** If port 5500 is taken, it uses the next free port. `--strict-port` turns this off.
-- **Safe by default.** It binds to `127.0.0.1` and refuses paths that leave the served folder (`..`, encoded `..`, `\`, drive letters, symlinks pointing outside).
+- **Safe by default.** It binds to `127.0.0.1` and refuses paths that leave the served folder (`..`, encoded `..`, `\`, drive letters, symlinks pointing outside). Other websites cannot read your files: there is no CORS header unless you pass `--cors`, requests for unknown host names are refused (this stops DNS rebinding), and the reload WebSocket only accepts local pages. Dotfiles such as `.env` and `.git` are hidden unless you pass `--dotfiles`.
 - **Editor tasks in one command** for VS Code and Zed (`live-serve init`).
 
 ## Install
@@ -48,6 +48,9 @@ live-serve init <vscode|zed> [DIR] [--port N]
 | `--host H` | `127.0.0.1` | `0.0.0.0` to reach it from other devices on your network |
 | `--ignore a,b` | | folder names not to watch, besides `node_modules` and `.git` |
 | `--spa` | off | serve `/index.html` for unknown routes |
+| `--allow-host a,b` | | host names to answer besides IP addresses, `localhost` and `*.localhost` (`*` for any), such as a name from your hosts file or a tunnel's domain |
+| `--cors` | off | send `Access-Control-Allow-Origin: *`, so pages on other origins can read the files |
+| `--dotfiles` | off | serve files and folders whose names start with `.` (`.well-known` is always served) |
 | `--no-reload` | off | plain static server: no injected script, no file watching |
 | `--open` | off | open the default browser once the server is up |
 | `-V, --version` | | |
@@ -107,7 +110,7 @@ This writes `.zed/tasks.json` with two tasks: **live-serve (5500)** and **live-s
 
 Each HTML page, including directory listings, gets a small script just before `</body>`. The script opens a WebSocket to `/__live/ws` on the same server.
 
-The server watches the folder recursively and batches events that arrive within 120 ms. It then sends `css` if only stylesheets changed, or `reload` otherwise. If the server restarts, the script reconnects on its own.
+The server watches the folder recursively. It waits until no file has changed for 120 ms, so a build that writes many files causes one reload, not many; during a build that runs longer than 2 seconds it reloads every 2 seconds. It then sends `css` if only stylesheets changed, or `reload` otherwise. Editor temporary files (`a.css~`, Vim swap files, JetBrains safe-write copies, `*.tmp`) are ignored, so saving a stylesheet still swaps it in place. If the server restarts, the script reconnects on its own.
 
 With `--no-reload`, there is no script and no watcher.
 

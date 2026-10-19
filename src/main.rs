@@ -1,4 +1,4 @@
-//! live-serve [DIR] [--port N] [--host H] [--ignore a,b] [--open]
+//! live-serve [DIR] [--port N] [--host H] [--ignore a,b] [--allow-host a,b] [--cors] [--dotfiles] [--open]
 //! live-serve init <vscode|zed> [DIR] [--port N]
 
 use std::io::Write;
@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use live_serve::init::{Editor, InitOutcome, init, tasks_json, tasks_path};
-use live_serve::{Config, bind, display_url, serve};
+use live_serve::{Config, bind, display_url, serve, strip_verbatim};
 
 const HELP: &str = "live-serve: a static dev server that reloads the page when files change
 
@@ -20,6 +20,10 @@ Options:
       --host H      address to bind (default 127.0.0.1; 0.0.0.0 for your network)
       --ignore a,b  directory names not to watch, besides node_modules and .git
       --spa         serve /index.html for unknown routes (single-page apps)
+      --allow-host a,b  host names to answer besides IP addresses and localhost
+                    (\"*\" for any), e.g. a hosts-file name or a tunnel's domain
+      --cors        send Access-Control-Allow-Origin: *, so other sites can read the files
+      --dotfiles    serve names starting with \".\" (.env, .git); hidden by default
       --no-reload   plain static server: no injected script, no file watching
       --open        open the browser once the server is up
   -V, --version     print the version
@@ -33,6 +37,9 @@ struct ServeArgs {
     ignore: Vec<String>,
     spa: bool,
     reload: bool,
+    cors: bool,
+    dotfiles: bool,
+    allow_host: Vec<String>,
     open: bool,
 }
 
@@ -61,6 +68,9 @@ fn parse(args: Vec<String>) -> Result<Command, String> {
         ignore: vec![],
         spa: false,
         reload: true,
+        cors: false,
+        dotfiles: false,
+        allow_host: vec![],
         open: false,
     };
     while let Some(arg) = iter.next() {
@@ -74,9 +84,15 @@ fn parse(args: Vec<String>) -> Result<Command, String> {
             "--host" => serve.host = iter.next().ok_or("--host needs an address")?,
             "--ignore" => {
                 let v = iter.next().ok_or("--ignore needs a list")?;
-                serve.ignore = v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect();
+                serve.ignore = list(&v);
+            }
+            "--allow-host" => {
+                let v = iter.next().ok_or("--allow-host needs a list")?;
+                serve.allow_host = list(&v);
             }
             "--strict-port" => serve.strict_port = true,
+            "--cors" => serve.cors = true,
+            "--dotfiles" => serve.dotfiles = true,
             "--spa" => serve.spa = true,
             "--no-reload" => serve.reload = false,
             "--open" => serve.open = true,
@@ -88,12 +104,17 @@ fn parse(args: Vec<String>) -> Result<Command, String> {
         .root
         .canonicalize()
         .map_err(|e| format!("cannot open directory {}: {e}", serve.root.display()))?;
-    serve.root = PathBuf::from(root.display().to_string().trim_start_matches(r"\\?\"));
+    serve.root = strip_verbatim(&root);
 
     Ok(match init_editor {
         Some(editor) => Command::Init { editor, root: serve.root, port: serve.port },
         None => Command::Serve(serve),
     })
+}
+
+/// "a, b,,c" → ["a", "b", "c"].
+fn list(value: &str) -> Vec<String> {
+    value.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect()
 }
 
 /// Print and flush: editors read these lines to tell when the server is up.
@@ -151,6 +172,11 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     cfg.ignore = args.ignore;
     cfg.spa = args.spa;
     cfg.reload = args.reload;
+    cfg.cors = args.cors;
+    cfg.dotfiles = args.dotfiles;
+    // The name it was started on is answered too, e.g. `--host mybox.lan`.
+    cfg.allowed_hosts = args.allow_host;
+    cfg.allowed_hosts.push(args.host);
     tokio::select! {
         result = serve(listener, cfg) => match result {
             Ok(()) => ExitCode::SUCCESS,
