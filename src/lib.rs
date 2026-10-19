@@ -7,6 +7,9 @@
 //!   header unless asked, so other websites cannot read the files.
 
 pub mod init;
+pub mod listing;
+
+pub use listing::{Entry, directory_listing};
 
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
@@ -132,13 +135,6 @@ fn is_hidden(name: &OsStr) -> bool {
 fn looks_like_asset(url_path: &str) -> bool {
     let last = url_path.split(['?', '#']).next().unwrap_or("").rsplit('/').next().unwrap_or("");
     last.contains('.')
-}
-
-fn escape_html(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 /// Content-Type live-serve sets itself for a file extension (with a charset for text);
@@ -288,21 +284,6 @@ pub fn strip_verbatim(path: &Path) -> PathBuf {
     }
 }
 
-/// Characters escaped in a file name used as one URL path segment.
-const PATH_SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
-    .add(b' ')
-    .add(b'"')
-    .add(b'#')
-    .add(b'%')
-    .add(b'<')
-    .add(b'>')
-    .add(b'?')
-    .add(b'`')
-    .add(b'{')
-    .add(b'}')
-    .add(b'/')
-    .add(b'\\');
-
 /// How many ports past the requested one `bind` tries when it is taken.
 const PORT_ATTEMPTS: u16 = 20;
 
@@ -328,31 +309,6 @@ pub fn display_url(host: &str, port: u16) -> String {
         h if h.contains(':') && !h.starts_with('[') => format!("http://[{h}]:{port}/"),
         h => format!("http://{h}:{port}/"),
     }
-}
-
-/// An HTML page listing a directory: `entries` are (name, is_dir), shown dirs first.
-pub fn directory_listing(url_path: &str, entries: &[(String, bool)]) -> String {
-    let mut sorted: Vec<&(String, bool)> = entries.iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
-
-    let title = escape_html(url_path);
-    let mut items = String::new();
-    if url_path.trim_matches('/') != "" {
-        items.push_str("<li><a href=\"../\">../</a></li>\n");
-    }
-    for (name, is_dir) in sorted {
-        let href = percent_encoding::utf8_percent_encode(name, PATH_SEGMENT).to_string();
-        let slash = if *is_dir { "/" } else { "" };
-        items.push_str(&format!(
-            "<li><a href=\"{href}{slash}\">{}{slash}</a></li>\n",
-            escape_html(name)
-        ));
-    }
-    format!(
-        "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>Index of {title}</title>\
-<style>body{{font:15px/1.6 system-ui,sans-serif;margin:2rem}}a{{text-decoration:none}}li{{list-style:none}}</style>\
-</head><body><h1>Index of {title}</h1><ul>\n{items}</ul></body></html>\n"
-    )
 }
 
 #[derive(Clone)]
@@ -450,19 +406,32 @@ async fn file_handler(State(state): State<AppState>, request: Request) -> Respon
     }
 }
 
+/// Reads and renders a listing in one go on the blocking pool: one task for the whole folder
+/// instead of one per entry. On Windows the size and date come with the directory read itself.
 async fn list_dir(url_path: &str, dir: &Path, dotfiles: bool) -> String {
-    let mut entries = Vec::new();
-    if let Ok(mut read) = tokio::fs::read_dir(dir).await {
-        while let Ok(Some(entry)) = read.next_entry().await {
-            let name = entry.file_name();
-            if !dotfiles && is_hidden(&name) {
-                continue;
+    let (url_path, dir) = (url_path.to_string(), dir.to_path_buf());
+    tokio::task::spawn_blocking(move || directory_listing(&url_path, &read_entries(&dir, dotfiles)))
+        .await
+        .unwrap_or_default()
+}
+
+fn read_entries(dir: &Path, dotfiles: bool) -> Vec<Entry> {
+    let Ok(read) = std::fs::read_dir(dir) else { return vec![] };
+    read.filter_map(Result::ok)
+        .filter(|entry| dotfiles || !is_hidden(&entry.file_name()))
+        .map(|entry| {
+            let meta = entry.metadata().ok();
+            Entry {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                is_dir: meta.as_ref().is_some_and(|m| m.is_dir()),
+                size: meta.as_ref().map_or(0, |m| m.len()),
+                modified: meta
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs()),
             }
-            let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
-            entries.push((name.to_string_lossy().into_owned(), is_dir));
-        }
-    }
-    directory_listing(url_path, &entries)
+        })
+        .collect()
 }
 
 fn html_response(state: &AppState, html: Vec<u8>) -> Response {
@@ -715,22 +684,6 @@ mod tests {
         assert_eq!(strip_verbatim(Path::new(r"\\?\C:\site")), PathBuf::from(r"C:\site"));
         assert_eq!(strip_verbatim(Path::new(r"\\?\UNC\server\share\site")), PathBuf::from(r"\\server\share\site"));
         assert_eq!(strip_verbatim(Path::new("/home/me/site")), PathBuf::from("/home/me/site"));
-    }
-
-    #[test]
-    fn lists_directories_safely() {
-        let html = directory_listing(
-            "/docs/",
-            &[("b.txt".into(), false), ("<x>.html".into(), false), ("sub".into(), true)],
-        );
-        assert!(html.contains("Index of /docs/"));
-        assert!(html.contains(r#"href="../""#), "link to parent");
-        assert!(html.contains(r#"href="sub/""#));
-        assert!(html.contains("&lt;x&gt;.html"), "names are escaped");
-        assert!(!html.contains("<x>"));
-        assert!(html.find("sub/").unwrap() < html.find("b.txt").unwrap(), "dirs first");
-        let root = directory_listing("/", &[]);
-        assert!(!root.contains(r#"href="../""#), "no parent link at the root");
     }
 
     #[tokio::test]

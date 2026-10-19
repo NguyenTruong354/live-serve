@@ -50,7 +50,7 @@ Troubleshooting:
 
 - **Live reload.** Saving a file reloads open pages. Saving only CSS swaps the stylesheets in place, without a full reload.
 - **Never stale.** Every response carries `Cache-Control: no-store`, so you always get the latest build.
-- **Directory listings** for folders without an `index.html`.
+- **Directory listings** for folders without an `index.html`: a clickable path, icons by file type, size and last-modified columns (in your local time), and a filter box (press `/`). They follow your system's light or dark theme, work on phones, and stay light: a folder of 1,000+ entries renders in about 1.5 ms.
 - **Media friendly.** Files stream from disk, with HTTP Range support so audio and video can seek.
 - **Single-page apps.** With `--spa`, unknown routes serve `/index.html`; missing assets still return 404.
 - **Busy port? It moves on.** If port 5500 is taken, it uses the next free port. `--strict-port` turns this off.
