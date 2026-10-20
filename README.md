@@ -3,7 +3,7 @@
 [![CI](https://github.com/NguyenTruong354/live-serve/actions/workflows/ci.yml/badge.svg)](https://github.com/NguyenTruong354/live-serve/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/live-serve.svg)](https://crates.io/crates/live-serve)
 
-A tiny static dev server that reloads the page when files change. Think VS Code's Live Server, as a single binary under 3 MB with no Node.js. Run it from the command line, from VS Code or from Zed, for any project on Windows, macOS and Linux.
+A tiny static dev server that reloads the page when files change. Think VS Code's Live Server, as a single binary of about 3 MB with no Node.js. Run it from the command line, from VS Code or from Zed, for any project on Windows, macOS and Linux.
 
 <img alt="Saving style.css swaps the stylesheet without a reload (the page's load time stays the same); saving index.html reloads the page" src="https://raw.githubusercontent.com/NguyenTruong354/live-serve/main/docs/images/demo.gif" width="960">
 
@@ -17,7 +17,7 @@ Compared with [`live-server`](https://www.npmjs.com/package/live-server), the pa
 | HTML page with the reload script | **0.50 ms** | 0.7–1.5 ms |
 | First response after start | **44 ms** | ~1.4 s |
 | Memory | **11 MB** | ~230 MB |
-| Install | one binary under 3 MB | Node.js + packages |
+| Install | one binary, 2.4–3.3 MB | Node.js + packages |
 
 Static files cost the same for both; the difference is everything around them. It also does a few things live-server does not:
 

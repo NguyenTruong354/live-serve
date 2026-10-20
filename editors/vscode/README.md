@@ -2,7 +2,7 @@
 
 Click **Go Live** in the status bar and your site opens in the browser. Save a file and the page reloads; save a stylesheet and it swaps in place, without a reload.
 
-The server is [live-serve](https://github.com/NguyenTruong354/live-serve), a native binary under 3 MB that comes inside the extension. Nothing else to install: no Node.js packages, no Rust.
+The server is [live-serve](https://github.com/NguyenTruong354/live-serve), a native binary of about 3 MB that comes inside the extension. Nothing else to install: no Node.js packages, no Rust.
 
 <img alt="Saving style.css swaps the stylesheet without a reload; saving index.html reloads the page" src="https://raw.githubusercontent.com/NguyenTruong354/live-serve/main/docs/images/demo.gif" width="800">
 
