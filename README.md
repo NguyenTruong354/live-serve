@@ -76,6 +76,7 @@ Troubleshooting:
 - **Directory listings** for folders without an `index.html`: a clickable path, icons by file type, size and last-modified columns (in your local time), and a filter box (press `/`). They follow your system's light or dark theme, work on phones, and stay light: a folder of 1,200 entries renders in about 2 ms.
 - **Media friendly.** Files stream from disk, with HTTP Range support so audio and video can seek.
 - **Single-page apps.** With `--spa`, unknown routes serve `/index.html`; missing assets still return 404.
+- **HTTPS when you need it.** `--https` makes a self-signed certificate (with your network address, for phones); `--cert` and `--key` take a trusted one from mkcert. Live reload follows over `wss://`. See [HTTPS](#https).
 - **Busy port? It moves on.** If port 5500 is taken, it uses the next free port. `--strict-port` turns this off.
 - **Safe by default.** It binds to `127.0.0.1` and refuses paths that leave the served folder (`..`, encoded `..`, `\`, drive letters, symlinks pointing outside). Other websites cannot read your files: there is no CORS header unless you pass `--cors`, requests for unknown host names are refused (this stops DNS rebinding), and the reload WebSocket only accepts local pages. Dotfiles such as `.env` and `.git` are hidden unless you pass `--dotfiles`.
 - **Editor tasks in one command** for VS Code and Zed (`live-serve init`).
