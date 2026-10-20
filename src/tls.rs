@@ -16,9 +16,15 @@ use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::{self, ServerConfig};
 use tokio_rustls::server::TlsStream;
 
-/// How long a self-signed certificate is valid. Short: browsers and macOS distrust long-lived ones, and
-/// a new one is made a day before it runs out.
+/// How long a self-signed certificate is valid. Short: browsers and macOS distrust long-lived ones.
 const SELF_SIGNED_DAYS: u64 = 30;
+
+/// A self-signed certificate is made again at start once it has this few days left, so a server left
+/// running (an editor open for days) does not outlive it.
+const RENEW_DAYS_LEFT: u64 = 7;
+
+/// The names every self-signed certificate is for.
+const LOOPBACK: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
 
 /// A client that connects but never finishes its handshake is dropped after this long.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -58,7 +64,7 @@ fn server_config(certs: Vec<CertificateDer<'static>>, key: PrivateKeyDer<'static
 /// to listen on when it is a particular one, and `lan` (this machine's network address) when it listens
 /// on all of them, so a phone that opens it by IP sees a matching name.
 pub fn certificate_names(host: &str, lan: Option<IpAddr>) -> Vec<String> {
-    let mut names: Vec<String> = ["localhost", "127.0.0.1", "::1"].map(String::from).into();
+    let mut names: Vec<String> = LOOPBACK.map(String::from).into();
     let host = host.trim_start_matches('[').trim_end_matches(']');
     let everywhere = host.parse::<IpAddr>().is_ok_and(|ip| ip.is_unspecified());
     let extra = if everywhere { lan.map(|ip| ip.to_string()) } else { Some(host.to_ascii_lowercase()) };
@@ -84,35 +90,84 @@ pub fn cache_dir() -> PathBuf {
     base.unwrap_or_else(std::env::temp_dir).join("live-serve")
 }
 
-/// A self-signed certificate for `names`, kept in `dir` (`cert.pem`, `key.pem`) and used again while it
-/// was made for the same names and has more than a day left. Returns the server settings and the
+/// A self-signed certificate for `names`, kept in a folder of `cache` named after them (`localhost`,
+/// `192.168.1.20`), so switching `--host` back and forth keeps each one and the browser warns once for
+/// each. Used again while it has more than RENEW_DAYS_LEFT days left. Returns the server settings and the
 /// certificate's file, which a browser or phone can be told to trust.
-pub fn self_signed(dir: &Path, names: &[String]) -> io::Result<(Arc<ServerConfig>, PathBuf)> {
-    let (cert, key, made_for) = (dir.join("cert.pem"), dir.join("key.pem"), dir.join("names.txt"));
-    let wanted = names.join("\n");
-    let renew_after = Duration::from_secs((SELF_SIGNED_DAYS - 1) * 24 * 60 * 60);
-    let reusable = std::fs::read_to_string(&made_for).is_ok_and(|n| n == wanted)
-        && std::fs::metadata(&cert)
-            .and_then(|m| m.modified())
-            .is_ok_and(|made| made.elapsed().is_ok_and(|age| age < renew_after));
-    if reusable && let Ok(config) = from_pem_files(&cert, &key) {
-        return Ok((config, cert));
-    }
-    let (cert_pem, key_pem) = generate(names, SystemTime::now())?;
-    std::fs::create_dir_all(dir)?;
-    write_private(&key, key_pem.as_bytes())?;
-    std::fs::write(&cert, cert_pem)?;
-    std::fs::write(&made_for, wanted)?;
-    Ok((from_pem_files(&cert, &key)?, cert))
+pub fn self_signed(cache: &Path, names: &[String]) -> io::Result<(Arc<ServerConfig>, PathBuf)> {
+    self_signed_on(cache, names, day_number(SystemTime::now()))
 }
 
-/// A new self-signed certificate and its key (ECDSA P-256), both PEM, valid from a day before `now` (for
-/// clocks a little behind) for SELF_SIGNED_DAYS. Names that parse as IP addresses become IP entries.
-fn generate(names: &[String], now: SystemTime) -> io::Result<(String, String)> {
+/// `self_signed` as on day `today` (days since 1970-01-01).
+fn self_signed_on(cache: &Path, names: &[String], today: u64) -> io::Result<(Arc<ServerConfig>, PathBuf)> {
+    let dir = cache.join(folder_for(names));
+    let (cert, key, about) = (dir.join("cert.pem"), dir.join("key.pem"), dir.join("about.txt"));
+    if is_current(&about, names, today) && let Ok(config) = from_pem_files(&cert, &key) {
+        return Ok((config, cert));
+    }
+    let (cert_pem, key_pem) = generate(names, today)?;
+    std::fs::create_dir_all(&dir)?;
+    // Each file is written beside its place and renamed into it, so nobody reads half of one. Two
+    // live-serves starting at once may still leave one's key with the other's certificate: then this one
+    // serves what it made, and the next start finds the pair broken and makes one again.
+    replace(&key, key_pem.as_bytes(), true)?;
+    replace(&cert, cert_pem.as_bytes(), false)?;
+    replace(&about, about_text(names, today + SELF_SIGNED_DAYS).as_bytes(), false)?;
+    let config = from_pem_files(&cert, &key).or_else(|_| from_pem(&cert_pem, &key_pem))?;
+    Ok((config, cert))
+}
+
+/// The cache folder for a certificate for `names`: the names besides loopback ("192.168.1.20",
+/// "mybox.lan", "fd00--1"), or "localhost" when there are none.
+fn folder_for(names: &[String]) -> String {
+    let extra: Vec<&str> = names.iter().map(String::as_str).filter(|n| !LOOPBACK.contains(n)).collect();
+    let folder: String = extra
+        .join("+")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || "-.+".contains(c) { c } else { '-' })
+        .collect();
+    // Never "", "." or "..", which would be the cache folder or above it.
+    match folder.trim_start_matches('.') {
+        "" if extra.is_empty() => "localhost".to_string(),
+        "" => "-".to_string(),
+        rest => rest.to_string(),
+    }
+}
+
+/// What `about.txt` says: the day the certificate runs out (days since 1970-01-01), then its names.
+fn about_text(names: &[String], until: u64) -> String {
+    format!("{until}\n{}", names.join("\n"))
+}
+
+/// Whether the certificate `about` tells of is for `names` and good to use on `today`: valid already (the
+/// clock may have been set back) and with more than RENEW_DAYS_LEFT days to go.
+fn is_current(about: &Path, names: &[String], today: u64) -> bool {
+    let Ok(text) = std::fs::read_to_string(about) else { return false };
+    let Some((until, made_for)) = text.split_once('\n') else { return false };
+    let Ok(until) = until.parse::<u64>() else { return false };
+    // Valid from the day before it was made, until the start of day `until`.
+    let valid_from = until.saturating_sub(SELF_SIGNED_DAYS + 1);
+    made_for == names.join("\n") && valid_from <= today && today + RENEW_DAYS_LEFT < until
+}
+
+/// Server settings from a certificate and key held as PEM text.
+fn from_pem(cert: &str, key: &str) -> io::Result<Arc<ServerConfig>> {
+    let certs = CertificateDer::pem_slice_iter(cert.as_bytes()).collect::<Result<Vec<_>, _>>().map_err(io::Error::other)?;
+    server_config(certs, PrivateKeyDer::from_pem_slice(key.as_bytes()).map_err(io::Error::other)?)
+}
+
+/// Days since 1970-01-01 at `time`.
+fn day_number(time: SystemTime) -> u64 {
+    time.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86_400)
+}
+
+/// A new self-signed certificate and its key (ECDSA P-256), both PEM, valid from the day before `today`
+/// (for clocks a little behind) until SELF_SIGNED_DAYS after it. Names that parse as IP addresses become
+/// IP entries.
+fn generate(names: &[String], today: u64) -> io::Result<(String, String)> {
     let mut params = rcgen::CertificateParams::new(names.to_vec()).map_err(io::Error::other)?;
     params.distinguished_name = rcgen::DistinguishedName::new();
     params.distinguished_name.push(rcgen::DnType::CommonName, "live-serve (local development)");
-    let today = now.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86_400);
     let date = |days| {
         let (year, month, day) = ymd(days);
         rcgen::date_time_ymd(year, month, day)
@@ -132,13 +187,30 @@ fn ymd(days: u64) -> (i32, u8, u8) {
     (year as i32, month as u8, day as u8)
 }
 
-/// Writes a private key readable only by its owner where the system has such permissions.
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+/// Writes `bytes` to a new file beside `path` and renames it into place. `private`: readable only by its
+/// owner, where the system has such permissions; the file is always a new one, so a key that was once
+/// readable by others does not stay so.
+fn replace(path: &Path, bytes: &[u8], private: bool) -> io::Result<()> {
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut temp = path.as_os_str().to_owned();
+    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    temp.push(format!(".{}-{n}.tmp", std::process::id()));
+    let temp = PathBuf::from(temp);
+    let _ = std::fs::remove_file(&temp);
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    std::io::Write::write_all(&mut options.open(path)?, bytes)
+    if private {
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+    let written = options.open(&temp).and_then(|mut file| std::io::Write::write_all(&mut file, bytes));
+    let renamed = written.and_then(|()| std::fs::rename(&temp, path));
+    if renamed.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    renamed
 }
 
 /// Accepts TCP connections and hands axum those that complete a TLS handshake. Handshakes run on tasks
@@ -219,9 +291,12 @@ async fn redirect_to_https(mut stream: TcpStream) {
         .find_map(|line| line.split_once(':').filter(|(name, _)| name.trim().eq_ignore_ascii_case("host")))
         .map(|(_, value)| value.trim())
         .filter(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_alphanumeric() || "-.:[]".contains(c)));
+    // Temporary and not to be stored: browsers keep a 301 for good, and would still send http://localhost:5500
+    // to https:// after live-serve (or another server) runs on that port without HTTPS.
     let response = match host {
         Some(host) => format!(
-            "HTTP/1.1 301 Moved Permanently\r\nLocation: https://{host}{target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: https://{host}{target}\r\nCache-Control: no-store\r\n\
+             Content-Length: 0\r\nConnection: close\r\n\r\n"
         ),
         None => "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
     };
@@ -257,41 +332,103 @@ mod tests {
         assert_eq!(ymd(20_746), (2026, 10, 20));
     }
 
+    /// The files in `dir`, sorted.
+    fn files(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> =
+            std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn each_set_of_names_has_a_folder_of_its_own() {
+        let names = |extra: &[&str]| -> Vec<String> { LOOPBACK.iter().chain(extra).map(|n| n.to_string()).collect() };
+        assert_eq!(folder_for(&names(&[])), "localhost");
+        assert_eq!(folder_for(&names(&["192.168.1.20"])), "192.168.1.20");
+        assert_eq!(folder_for(&names(&["mybox.lan"])), "mybox.lan");
+        assert_eq!(folder_for(&names(&["fd00::1"])), "fd00--1");
+        assert_eq!(folder_for(&names(&["a", "b/c"])), "a+b-c");
+        // Never the cache folder itself or one above it.
+        assert_eq!(folder_for(&names(&[".."])), "-");
+        assert_eq!(folder_for(&names(&["..x"])), "x");
+    }
+
     #[test]
     fn a_self_signed_certificate_is_made_once_and_kept() {
         let dir = temp("keep");
         let names: Vec<String> = certificate_names("127.0.0.1", None);
         let (_, cert) = self_signed(&dir, &names).unwrap();
+        assert_eq!(cert, dir.join("localhost").join("cert.pem"));
         let first = std::fs::read(&cert).unwrap();
         let (_, again) = self_signed(&dir, &names).unwrap();
         assert_eq!(std::fs::read(again).unwrap(), first, "kept, not made again");
-        // For other names (the network address changed), a new one.
+        assert_eq!(files(&cert.parent().unwrap()), ["about.txt", "cert.pem", "key.pem"], "no temporary files left");
+
+        // Other names (--host 0.0.0.0) get one of their own, and the first is still there afterwards:
+        // switching back and forth does not make the browser warn again each time.
         let more = certificate_names("0.0.0.0", Some("10.0.0.7".parse().unwrap()));
         let (_, other) = self_signed(&dir, &more).unwrap();
-        assert_ne!(std::fs::read(other).unwrap(), first);
+        assert_eq!(other, dir.join("10.0.0.7").join("cert.pem"));
+        assert_ne!(std::fs::read(&other).unwrap(), first);
+        let (_, back) = self_signed(&dir, &names).unwrap();
+        assert_eq!(std::fs::read(back).unwrap(), first);
     }
 
     #[test]
-    fn an_old_or_broken_certificate_is_made_again() {
+    fn a_certificate_is_renewed_a_week_before_it_runs_out() {
         let dir = temp("renew");
+        let names = certificate_names("127.0.0.1", None);
+        let today = day_number(SystemTime::now());
+        let made = |day| std::fs::read(self_signed_on(&dir, &names, day).unwrap().1).unwrap();
+        let first = made(today);
+        // Valid until the start of day today + 30: kept while more than 7 days are left.
+        assert_eq!(made(today + SELF_SIGNED_DAYS - RENEW_DAYS_LEFT - 1), first, "8 days left: kept");
+        let second = made(today + SELF_SIGNED_DAYS - RENEW_DAYS_LEFT);
+        assert_ne!(second, first, "7 days left: made again");
+        let made_on = today + SELF_SIGNED_DAYS - RENEW_DAYS_LEFT;
+        // A clock set back: kept while the certificate is already valid (from the day before it was made).
+        assert_eq!(made(made_on - 1), second, "valid from the day before");
+        assert_ne!(made(made_on - 2), second, "not valid yet: made again");
+    }
+
+    #[test]
+    fn a_broken_certificate_is_made_again() {
+        let dir = temp("broken");
         let names = certificate_names("127.0.0.1", None);
         let (_, cert) = self_signed(&dir, &names).unwrap();
         let first = std::fs::read(&cert).unwrap();
-        let old = SystemTime::now() - Duration::from_secs(SELF_SIGNED_DAYS * 24 * 60 * 60);
-        std::fs::File::options().write(true).open(&cert).unwrap().set_modified(old).unwrap();
-        let (_, renewed) = self_signed(&dir, &names).unwrap();
-        let second = std::fs::read(&renewed).unwrap();
-        assert_ne!(second, first, "a month old: made again");
-        std::fs::write(dir.join("key.pem"), "not a key").unwrap();
+        std::fs::write(cert.with_file_name("key.pem"), "not a key").unwrap();
         let (_, repaired) = self_signed(&dir, &names).unwrap();
-        assert_ne!(std::fs::read(repaired).unwrap(), second, "unreadable: made again");
+        let second = std::fs::read(&repaired).unwrap();
+        assert_ne!(second, first, "unreadable: made again");
+        std::fs::write(cert.with_file_name("about.txt"), "not a date").unwrap();
+        assert_ne!(std::fs::read(self_signed(&dir, &names).unwrap().1).unwrap(), second, "unknown age: made again");
+    }
+
+    #[test]
+    fn live_serves_starting_together_all_start() {
+        let dir = temp("together");
+        let names = certificate_names("127.0.0.1", None);
+        let starts: Vec<_> = (0..8)
+            .map(|_| {
+                let (dir, names) = (dir.clone(), names.clone());
+                std::thread::spawn(move || self_signed(&dir, &names).map(|_| ()))
+            })
+            .collect();
+        for start in starts {
+            start.join().unwrap().unwrap();
+        }
+        // Whatever pair was left on disk, the next start has a working one.
+        let (_, cert) = self_signed(&dir, &names).unwrap();
+        assert!(from_pem_files(&cert, &cert.with_file_name("key.pem")).is_ok());
+        assert_eq!(files(&cert.parent().unwrap()), ["about.txt", "cert.pem", "key.pem"]);
     }
 
     #[test]
     fn reads_pem_files_and_names_what_is_wrong() {
         let dir = temp("pem");
         std::fs::create_dir_all(&dir).unwrap();
-        let (cert_pem, key_pem) = generate(&["localhost".into()], SystemTime::now()).unwrap();
+        let (cert_pem, key_pem) = generate(&["localhost".into()], day_number(SystemTime::now())).unwrap();
         let (cert, key) = (dir.join("c.pem"), dir.join("k.pem"));
         std::fs::write(&cert, &cert_pem).unwrap();
         std::fs::write(&key, &key_pem).unwrap();
@@ -304,7 +441,7 @@ mod tests {
         assert!(empty.contains("no certificate"), "{empty}");
         let swapped = from_pem_files(&key, &cert).unwrap_err().to_string();
         assert!(swapped.contains("certificate"), "{swapped}");
-        let (_, other_key) = generate(&["localhost".into()], SystemTime::now()).unwrap();
+        let (_, other_key) = generate(&["localhost".into()], day_number(SystemTime::now())).unwrap();
         std::fs::write(dir.join("other.pem"), other_key).unwrap();
         let mismatch = from_pem_files(&cert, &dir.join("other.pem")).unwrap_err().to_string();
         assert!(mismatch.contains("do not go together"), "{mismatch}");
@@ -315,8 +452,14 @@ mod tests {
     fn the_key_is_private() {
         use std::os::unix::fs::PermissionsExt;
         let dir = temp("mode");
-        self_signed(&dir, &certificate_names("127.0.0.1", None)).unwrap();
-        let mode = std::fs::metadata(dir.join("key.pem")).unwrap().permissions().mode();
-        assert_eq!(mode & 0o077, 0, "{mode:o}");
+        let names = certificate_names("127.0.0.1", None);
+        let key = self_signed(&dir, &names).unwrap().1.with_file_name("key.pem");
+        let mode = |key: &Path| std::fs::metadata(key).unwrap().permissions().mode();
+        assert_eq!(mode(&key) & 0o077, 0, "{:o}", mode(&key));
+        // A key someone made readable to all is not written over in place, which would keep that.
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::write(key.with_file_name("about.txt"), "").unwrap();
+        self_signed(&dir, &names).unwrap();
+        assert_eq!(mode(&key) & 0o077, 0, "{:o}", mode(&key));
     }
 }

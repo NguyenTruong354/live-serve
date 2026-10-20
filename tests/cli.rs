@@ -145,7 +145,7 @@ fn https_with_a_self_signed_certificate_says_so_and_keeps_it() {
     assert!(lines.last().unwrap().starts_with("live-serve: https://127.0.0.1:"), "{lines:?}");
     let note = server.line();
     assert!(note.starts_with("live-serve: the certificate is self-signed"), "{note}");
-    let cert = cache("https").join("cert.pem");
+    let cert = cache("https").join("localhost").join("cert.pem");
     assert!(note.ends_with(&cert.display().to_string()), "{note}");
     assert!(std::fs::read_to_string(&cert).unwrap().starts_with("-----BEGIN CERTIFICATE-----"));
 }

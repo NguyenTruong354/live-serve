@@ -32,7 +32,7 @@ async fn start(name: &str, root: PathBuf) -> (u16, PathBuf) {
     let certs = temp(&format!("{name}-cert"));
     let (_, cert) = tls::self_signed(&certs, &tls::certificate_names("127.0.0.1", None)).unwrap();
     let mut cfg = Config::new(root);
-    cfg.tls = Some(tls::from_pem_files(&cert, &certs.join("key.pem")).unwrap());
+    cfg.tls = Some(tls::from_pem_files(&cert, &cert.with_file_name("key.pem")).unwrap());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move { serve(listener, cfg).await.unwrap() });
@@ -118,8 +118,10 @@ async fn plain_http_to_the_https_port_is_sent_to_https() {
     let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     s.write_all(format!("GET /docs/?q=1 HTTP/1.1\r\nHost: localhost:{port}\r\n\r\n").as_bytes()).await.unwrap();
     let response = read_all(&mut s).await;
-    assert!(response.starts_with("HTTP/1.1 301"), "{response}");
+    // Temporary, and not kept: a later server without HTTPS on this port must not be sent to https://.
+    assert!(response.starts_with("HTTP/1.1 307"), "{response}");
     assert!(response.contains(&format!("Location: https://localhost:{port}/docs/?q=1\r\n")), "{response}");
+    assert!(response.contains("Cache-Control: no-store\r\n"), "{response}");
 
     // A Host that is not a plain host name is not echoed into the redirect.
     let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
