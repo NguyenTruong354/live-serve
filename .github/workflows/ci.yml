@@ -21,6 +21,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+      # The release's tag check, on the version as it stands: the crate, the extension and the
+      # changelog agree on every push, not only on release day.
+      - name: Versions agree
+        if: runner.os == 'Linux'
+        run: bash .github/scripts/check-tag.sh "v$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)"
       - uses: dtolnay/rust-toolchain@stable
       # The reload script's tests run it in Node.js; with CI set they fail rather than skip without it.
       - uses: actions/setup-node@v7

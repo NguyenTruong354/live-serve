@@ -1,5 +1,5 @@
 //! live-serve [DIR] [--port N] [--host H] [--ignore a,b] [--allow-host a,b] [--cors] [--dotfiles] [--poll]
-//!            [--https | --cert FILE --key FILE] [--open[=PAGE]]
+//!            [--https | --cert FILE --key FILE] [--proxy PATH=URL]... [--open[=PAGE]]
 //! live-serve init <vscode|zed> [DIR] [--port N]
 
 use std::io::Write;
@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use live_serve::init::{Editor, InitOutcome, init, tasks_json, tasks_path};
+use live_serve::proxy::Proxy;
 use live_serve::{Config, bind, display_url, lan_address, page_url, serve, strip_verbatim, tls};
 
 const HELP: &str = "live-serve: a static dev server that reloads the page when files change
@@ -33,6 +34,10 @@ Options:
                     (the browser warns once; for one it trusts, use --cert and --key)
       --cert FILE   serve over HTTPS with this certificate (PEM), e.g. made by mkcert
       --key FILE    and its private key (unencrypted PEM)
+      --proxy PATH=URL
+                    send requests under PATH to another local server, PATH replaced by
+                    URL's path: --proxy /api=http://localhost:3000 sends /api/users to
+                    http://localhost:3000/users; repeat it for more
       --open        open the browser once the server is up
       --open=PAGE   the same, at PAGE (e.g. --open=docs/ or --open=about.html)
       --exit-on-stdin-close
@@ -57,6 +62,7 @@ struct ServeArgs {
     open: Option<String>,
     exit_on_stdin_close: bool,
     https: Https,
+    proxies: Vec<Proxy>,
 }
 
 /// How to serve HTTPS, if at all.
@@ -101,6 +107,7 @@ fn parse(args: Vec<String>) -> Result<Command, String> {
         open: None,
         exit_on_stdin_close: false,
         https: Https::Off,
+        proxies: vec![],
     };
     let (mut cert, mut key, mut self_signed) = (None, None, false);
     while let Some(arg) = iter.next() {
@@ -131,6 +138,7 @@ fn parse(args: Vec<String>) -> Result<Command, String> {
             s if s.starts_with("--open=") => serve.open = Some(s["--open=".len()..].to_string()),
             "--exit-on-stdin-close" => serve.exit_on_stdin_close = true,
             "--https" => self_signed = true,
+            "--proxy" => serve.proxies.push(Proxy::parse(&iter.next().ok_or("--proxy needs PATH=URL")?)?),
             "--cert" => cert = Some(PathBuf::from(iter.next().ok_or("--cert needs a file")?)),
             "--key" => key = Some(PathBuf::from(iter.next().ok_or("--key needs a file")?)),
             s if s.starts_with('-') => return Err(format!("unknown option: {s}")),
@@ -234,6 +242,14 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     if let Some(ip) = lan {
         say(&format!("live-serve: on your network: {}", display_url(&ip.to_string(), port, https)));
     }
+    for rule in &args.proxies {
+        let path = if rule.prefix.is_empty() { "/" } else { &rule.prefix };
+        say(&format!("live-serve: {path} goes to {}", rule.target));
+    }
+    // A backend that listens on this machine only is reachable from elsewhere through live-serve.
+    if !args.proxies.is_empty() && !this_machine_only(&args.host) {
+        say("live-serve: note: other devices that reach live-serve reach the proxied servers through it too");
+    }
     if let Some(cert) = self_signed {
         say(&format!(
             "live-serve: the certificate is self-signed, so the browser warns once; it is kept in {}",
@@ -253,6 +269,7 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     cfg.dotfiles = args.dotfiles;
     cfg.poll = args.poll;
     cfg.tls = tls;
+    cfg.proxies = args.proxies;
     // The name it was started on is answered too, e.g. `--host mybox.lan`.
     cfg.allowed_hosts = args.allow_host;
     cfg.allowed_hosts.push(args.host);
@@ -291,6 +308,15 @@ async fn stdin_closed(enabled: bool) {
         let _ = tx.send(());
     });
     let _ = rx.await;
+}
+
+/// Whether a server on `host` is reachable from this machine only: `localhost`, `*.localhost` or a
+/// loopback address.
+fn this_machine_only(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    host == "localhost"
+        || host.ends_with(".localhost")
+        || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 fn open_browser(url: &str) {
@@ -340,6 +366,27 @@ mod tests {
             assert!(error.contains("--cert") && error.contains("--key"), "{error}");
         }
         assert!(parse(vec!["--cert".into()]).is_err(), "a file is needed");
+    }
+
+    #[test]
+    fn only_loopback_hosts_keep_proxied_servers_on_this_machine() {
+        for host in ["127.0.0.1", "127.0.0.2", "localhost", "LocalHost", "app.localhost", "::1", "[::1]"] {
+            assert!(this_machine_only(host), "{host}");
+        }
+        for host in ["0.0.0.0", "::", "[::]", "192.168.1.20", "mybox.lan", "localhost.example"] {
+            assert!(!this_machine_only(host), "{host}");
+        }
+    }
+
+    #[test]
+    fn proxies_add_up_and_bad_ones_are_named() {
+        assert!(serve_args(&[]).proxies.is_empty());
+        let args = serve_args(&["--proxy", "/api=http://localhost:3000", "--proxy", "/auth=http://localhost:4000/v1"]);
+        let rules: Vec<_> = args.proxies.iter().map(|p| (p.prefix.as_str(), p.target.as_str())).collect();
+        assert_eq!(rules, [("/api", "http://localhost:3000"), ("/auth", "http://localhost:4000/v1")]);
+        let error = parse(vec!["--proxy".into(), "/api=localhost:3000".into()]).err().unwrap();
+        assert!(error.contains("http://"), "{error}");
+        assert!(parse(vec!["--proxy".into()]).is_err(), "a rule is needed");
     }
 
     #[test]

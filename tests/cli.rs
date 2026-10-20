@@ -165,3 +165,32 @@ fn an_unreadable_certificate_is_named() {
     assert_eq!(code, Some(1), "{text}");
     assert!(text.contains("live-serve: error: cannot read the certificate no-such-cert.pem"), "{text}");
 }
+
+#[test]
+fn proxies_are_listed_after_the_address() {
+    let mut server = Server::start("proxy", &["--proxy", "/api=http://localhost:3000", "--exit-on-stdin-close"]);
+    server.until("live-serve: http://127.0.0.1:");
+    assert_eq!(server.line(), "live-serve: /api goes to http://localhost:3000");
+    // On loopback, nothing more: the backend stays on this machine.
+    drop(server.child.stdin.take());
+    assert!(server.exits_within(Duration::from_secs(5)));
+    assert_eq!(server.line(), "live-serve: stopped (standard input closed)", "no note in between");
+}
+
+#[test]
+fn on_all_addresses_proxied_servers_come_with_a_note() {
+    // A backend that listens on localhost only is reachable from the network through live-serve.
+    let mut server = Server::start("proxy-lan", &["--host", "0.0.0.0", "--proxy", "/api=http://localhost:3000"]);
+    server.until("live-serve: /api goes to");
+    assert_eq!(
+        server.line(),
+        "live-serve: note: other devices that reach live-serve reach the proxied servers through it too"
+    );
+}
+
+#[test]
+fn a_bad_proxy_rule_is_named() {
+    let (code, text) = run(&["--proxy", "/api=https://example.com"]);
+    assert_eq!(code, Some(2), "{text}");
+    assert!(text.contains("http:// servers only"), "{text}");
+}

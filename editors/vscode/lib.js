@@ -74,4 +74,25 @@ function singleFlight(fn) {
   };
 }
 
-module.exports = { findUrl, urlPort, serveArgs, folderProblem, pageUrl, binaryName, chooseFolder, singleFlight };
+/**
+ * How to start the server: stdin stays an open pipe (it exits once that closes), and it runs in `base`,
+ * the workspace folder, so relative paths in liveServe.args (`--cert certs/localhost.pem`) mean what
+ * they say there. Without a folder that exists, it runs where the extension host does.
+ */
+function spawnOptions(base) {
+  const options = { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true };
+  if (base && folderProblem(base) === null) options.cwd = base;
+  return options;
+}
+
+module.exports = {
+  findUrl,
+  urlPort,
+  serveArgs,
+  folderProblem,
+  pageUrl,
+  binaryName,
+  chooseFolder,
+  singleFlight,
+  spawnOptions,
+};

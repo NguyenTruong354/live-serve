@@ -27,6 +27,7 @@ pkg-fmt = "zip"
 
 [dependencies]
 axum = { version = "0.8.9", features = ["ws"] }
+hyper-util = { version = "0.1.21", features = ["client-legacy", "http1", "tokio"] }
 notify = "8.2.0"
 percent-encoding = "2.3.2"
 rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem", "crypto"] }

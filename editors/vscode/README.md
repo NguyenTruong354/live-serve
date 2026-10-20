@@ -23,7 +23,7 @@ If port 5500 is taken (for example by another Live Server), it moves to the next
 | `liveServe.root` | (the folder) | folder to serve, relative to the workspace folder, e.g. `dist` |
 | `liveServe.host` | `127.0.0.1` | `0.0.0.0` lets phones on your Wi-Fi open the page |
 | `liveServe.openBrowser` | `true` | open the browser after Go Live |
-| `liveServe.args` | `[]` | more options, e.g. `["--spa"]` for single-page apps, `["--poll"]` for WSL and network drives, or `["--https"]` (see below) |
+| `liveServe.args` | `[]` | more options, e.g. `["--spa"]` for single-page apps, `["--poll"]` for WSL and network drives, `["--https"]` (see below), or `["--proxy", "/api=http://localhost:3000"]` to call your API without CORS |
 | `liveServe.binaryPath` | (bundled) | run another `live-serve` binary instead (one that knows `--exit-on-stdin-close`) |
 
 In a multi-root workspace each folder can have its own settings, except `binaryPath`. All server options are listed in the [live-serve README](https://github.com/NguyenTruong354/live-serve#command-line).
@@ -37,10 +37,10 @@ Most pages do not need it: the browser treats `http://127.0.0.1` as secure, came
 "liveServe.args": ["--https"]
 ```
 
-`--https` makes a self-signed certificate, so the browser warns once. For one it trusts, make it with [mkcert](https://github.com/FiloSottile/mkcert) and pass both files with full paths:
+`--https` makes a self-signed certificate, so the browser warns once. For one it trusts, make it with [mkcert](https://github.com/FiloSottile/mkcert) and pass both files. Relative paths start from the workspace folder; keep the files outside the folder you serve (or in a dotfolder, which is never served), since anyone who can open the site could otherwise download the key:
 
 ```json
-"liveServe.args": ["--cert", "C:/certs/localhost+3.pem", "--key", "C:/certs/localhost+3-key.pem"]
+"liveServe.args": ["--cert", ".certs/localhost+3.pem", "--key", ".certs/localhost+3-key.pem"]
 ```
 
 The status bar and **Open with live-serve** then use `https://`, and live reload goes over `wss://`. More in the [live-serve README](https://github.com/NguyenTruong354/live-serve#https).
