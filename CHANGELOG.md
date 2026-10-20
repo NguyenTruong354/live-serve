@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-10-20)
 
 - `--proxy PATH=URL` sends requests under `PATH` to another local server, so a static frontend can call its API without CORS: `--proxy /api=http://localhost:3000` sends `/api/users` to `http://localhost:3000/users`. Every method and body passes through, `PATH` is replaced by the target's path as in VS Code's Live Server, the longest `PATH` wins, a backend redirect to itself (`http://localhost:3000/login` or `/login`) comes back under `PATH`, and a backend that is down gives a `502` that says why. WebSockets are not passed on yet. With `--host 0.0.0.0`, live-serve notes at start that other devices reach the proxied servers through it.
 - Release builds check that the tag matches the version in `Cargo.toml`, the extension and `CHANGELOG.md` before building.
