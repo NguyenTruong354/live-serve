@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 (2026-10-20)
+
+- The VS Code extension is now `nguyentruong354.live-serve-native`, on the VS Code Marketplace and Open VSX alike. The Marketplace already has another extension named `live-serve`, and an extension's name must be unique there. Settings (`liveServe.*`), commands and the server are unchanged; on Open VSX, uninstall `nguyentruong354.live-serve` and install `live-serve-native`.
+- Releases publish the extension to Open VSX and the VS Code Marketplace on their own, once the `OVSX_PAT` and `VSCE_PAT` secrets are set; the Publish extension workflow publishes a release that is already out.
+- README: install the extension from either registry; the binary is about 3 MB (2.4–3.3 MB by platform), not under 3 MB.
+
 ## 0.4.0 (2026-10-20)
 
 - `--proxy PATH=URL` sends requests under `PATH` to another local server, so a static frontend can call its API without CORS: `--proxy /api=http://localhost:3000` sends `/api/users` to `http://localhost:3000/users`. Every method and body passes through, `PATH` is replaced by the target's path as in VS Code's Live Server, the longest `PATH` wins, a backend redirect to itself (`http://localhost:3000/login` or `/login`) comes back under `PATH`, and a backend that is down gives a `502` that says why. WebSockets are not passed on yet. With `--host 0.0.0.0`, live-serve notes at start that other devices reach the proxied servers through it.

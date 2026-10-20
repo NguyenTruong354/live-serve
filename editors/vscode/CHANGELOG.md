@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1 (2026-10-20)
+
+- Renamed to `nguyentruong354.live-serve-native`, so it can be on the VS Code Marketplace, which already has an extension named `live-serve`. If you installed `nguyentruong354.live-serve` from Open VSX, uninstall it and install this one; your `liveServe.*` settings carry over.
+- On the VS Code Marketplace and Open VSX.
+
 ## 0.4.0 (2026-10-20)
 
 - The server runs in the workspace folder, so relative paths in `liveServe.args` work: `["--cert", ".certs/localhost.pem", "--key", ".certs/localhost-key.pem"]`.

@@ -1,8 +1,8 @@
 {
-  "name": "live-serve",
+  "name": "live-serve-native",
   "displayName": "live-serve: Go Live without Node",
   "description": "Live reload for static sites from a small native server. Click Go Live; saving CSS swaps it in place.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "nguyentruong354",
   "license": "MIT",
   "icon": "icon.png",
