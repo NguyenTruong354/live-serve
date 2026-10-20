@@ -6,6 +6,9 @@ const vscode = require('vscode');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const http = require('node:http');
+const https = require('node:https');
+const { spawn } = require('node:child_process');
+const { X509Certificate } = require('node:crypto');
 const net = require('node:net');
 const path = require('node:path');
 
@@ -19,6 +22,49 @@ const get = (url) =>
   });
 
 const refused = (url) => get(url).then(() => false, () => true);
+
+/**
+ * GET over HTTPS from a server that must present exactly `cert` (PEM). The certificate is matched by its
+ * fingerprint rather than trusted as a CA: VS Code's TLS (BoringSSL) does not take a self-signed leaf
+ * certificate as a trust anchor, where Node's OpenSSL does.
+ */
+const getTls = (url, cert) =>
+  new Promise((resolve, reject) => {
+    const expected = new X509Certificate(cert).fingerprint256;
+    https
+      .get(url, { agent: new https.Agent({ rejectUnauthorized: false }) }, (res) => {
+        const presented = res.socket.getPeerX509Certificate()?.fingerprint256;
+        if (presented !== expected) return reject(new Error(`the server presented ${presented}, not ${expected}`));
+        let body = '';
+        res.on('data', (c) => (body += c));
+        res.on('end', () => resolve({ status: res.statusCode, body }));
+      })
+      .on('error', reject);
+  });
+
+/**
+ * Has the live-serve binary at `exe` make a self-signed certificate in `cacheDir` (its --https) and
+ * resolves with the certificate's file, which it prints; key.pem lies beside it.
+ */
+function selfSigned(exe, cacheDir) {
+  fs.mkdirSync(cacheDir, { recursive: true });
+  return new Promise((resolve, reject) => {
+    const child = spawn(exe, [cacheDir, '--https', '--port', '0', '--exit-on-stdin-close'], {
+      env: { ...process.env, LIVE_SERVE_CACHE_DIR: cacheDir },
+      windowsHide: true,
+    });
+    let printed = '';
+    const timer = setTimeout(() => (child.kill(), reject(new Error(`no certificate: ${printed}`))), 5000);
+    child.stdout.on('data', (data) => {
+      printed += data;
+      const kept = /it is kept in (.+?)\r?\n/.exec(printed);
+      if (!kept) return;
+      clearTimeout(timer);
+      child.stdin.end();
+      resolve(kept[1]);
+    });
+  });
+}
 
 /** Resolves once `check()` is true; fails after 5 s. */
 async function until(check, what) {
@@ -176,6 +222,31 @@ exports.run = async function run() {
     assert.equal(opened[0], new URL('sub/page.html', api.state().url).href);
     await first;
     await run('liveServe.stop');
+  });
+
+  await step('relative paths in liveServe.args start from the workspace folder', async () => {
+    // A certificate pair, made by the bundled server's --https into a folder of the test's own.
+    const certs = path.join(root, 'certs');
+    const made = await selfSigned(path.join(ext.extensionPath, 'bin', process.platform === 'win32' ? 'live-serve.exe' : 'live-serve'), path.join(root, 'cert-cache'));
+    fs.mkdirSync(certs, { recursive: true });
+    fs.copyFileSync(made, path.join(certs, 'site.pem'));
+    fs.copyFileSync(path.join(path.dirname(made), 'key.pem'), path.join(certs, 'site-key.pem'));
+    const cfg = vscode.workspace.getConfiguration('liveServe');
+    await cfg.update('args', ['--cert', 'certs/site.pem', '--key', 'certs/site-key.pem'], vscode.ConfigurationTarget.Workspace);
+    try {
+      api.takeError();
+      const started = await run('liveServe.start');
+      assert.ok(started, `started (error: ${api.takeError()})`);
+      assert.match(api.state().url, /^https:\/\/127\.0\.0\.1:\d+\/$/);
+      const page = await getTls(api.state().url, fs.readFileSync(made));
+      assert.equal(page.status, 200);
+      assert.match(page.body, /Test site/);
+      await run('liveServe.stop');
+    } finally {
+      await cfg.update('args', undefined, vscode.ConfigurationTarget.Workspace);
+      fs.rmSync(certs, { recursive: true, force: true });
+      fs.rmSync(path.join(root, 'cert-cache'), { recursive: true, force: true });
+    }
   });
 
   await step('a root folder that does not exist yet is named, not blamed on the binary', async () => {

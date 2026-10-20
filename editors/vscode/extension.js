@@ -7,7 +7,17 @@ const vscode = require('vscode');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { findUrl, urlPort, serveArgs, folderProblem, pageUrl, binaryName, singleFlight, chooseFolder } = require('./lib');
+const {
+  findUrl,
+  urlPort,
+  serveArgs,
+  folderProblem,
+  pageUrl,
+  binaryName,
+  singleFlight,
+  chooseFolder,
+  spawnOptions,
+} = require('./lib');
 
 /**
  * The running server: { child, root, url, ready, stopping }. url is null until it listens; ready
@@ -72,9 +82,9 @@ function showStatus() {
 }
 
 /**
- * The folder to serve, { root, scope }: the workspace folder of `uri` or of the active editor, plus the
- * `root` setting; scope is the URI its settings are read for. Null when there is none, or when the
- * folder pick was dismissed.
+ * The folder to serve, { root, scope, base }: the workspace folder of `uri` or of the active editor,
+ * plus the `root` setting; scope is the URI its settings are read for, and base the folder that relative
+ * paths in them start from. Null when there is none, or when the folder pick was dismissed.
  */
 async function pickRoot(uri) {
   const target = uri || vscode.window.activeTextEditor?.document.uri;
@@ -85,12 +95,15 @@ async function pickRoot(uri) {
   const { folder } = chosen;
   if (!folder) {
     // A single file opened without a folder: serve the folder it is in.
-    if (target?.scheme === 'file') return { root: path.dirname(target.fsPath), scope: target };
+    if (target?.scheme === 'file') {
+      const dir = path.dirname(target.fsPath);
+      return { root: dir, scope: target, base: dir };
+    }
     showError('live-serve: open a folder first.');
     return null;
   }
   const sub = vscode.workspace.getConfiguration('liveServe', folder.uri).get('root') || '';
-  return { root: path.resolve(folder.uri.fsPath, sub), scope: folder.uri };
+  return { root: path.resolve(folder.uri.fsPath, sub), scope: folder.uri, base: folder.uri.fsPath };
 }
 
 /** The binary to run: the `binaryPath` setting, else the bundled one, else `live-serve` on PATH. */
@@ -123,7 +136,7 @@ function start(uri, browser) {
 async function launch(uri, browser) {
   const picked = await pickRoot(uri);
   if (!picked) return null;
-  const { root, scope } = picked;
+  const { root, scope, base } = picked;
   const problem = folderProblem(root);
   if (problem) {
     showError(problem);
@@ -136,8 +149,8 @@ async function launch(uri, browser) {
   output.appendLine(`> ${exe} ${args.join(' ')}`);
 
   // stdin stays an open pipe while the server runs: it exits once that closes (--exit-on-stdin-close),
-  // also when the extension host dies without stopping it.
-  const child = spawn(exe, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  // also when the extension host dies without stopping it. It runs in the workspace folder.
+  const child = spawn(exe, args, spawnOptions(base));
   child.stdin.on('error', () => {});
   const mine = { child, root, url: null, ready: null, stopping: false };
   mine.ready = watch(mine, browser);

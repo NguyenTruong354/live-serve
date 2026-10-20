@@ -4,7 +4,29 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { findUrl, urlPort, serveArgs, folderProblem, pageUrl, binaryName, chooseFolder, singleFlight } = require('../lib');
+const {
+  findUrl,
+  urlPort,
+  serveArgs,
+  folderProblem,
+  pageUrl,
+  binaryName,
+  chooseFolder,
+  singleFlight,
+  spawnOptions,
+} = require('../lib');
+
+test('runs the server in the workspace folder, so relative paths in its arguments work', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'live-serve-cwd-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const options = spawnOptions(dir);
+  assert.equal(options.cwd, dir);
+  assert.deepEqual(options.stdio, ['pipe', 'pipe', 'pipe'], 'stdin stays open for --exit-on-stdin-close');
+  assert.equal(options.windowsHide, true);
+  // A folder that is gone would make spawn fail as if the binary were missing: no cwd then.
+  assert.equal(spawnOptions(path.join(dir, 'gone')).cwd, undefined);
+  assert.equal(spawnOptions(undefined).cwd, undefined);
+});
 
 test('finds the address once the server listens, also when it moved to another port', () => {
   assert.equal(findUrl('live-serve: starting in /site\n'), null);

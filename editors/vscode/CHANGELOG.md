@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The server runs in the workspace folder, so relative paths in `liveServe.args` work: `["--cert", ".certs/localhost.pem", "--key", ".certs/localhost-key.pem"]`.
 - Packages for Linux on Arm and Windows on Arm. The Linux server is now a static binary, so it also runs over Remote-SSH on older distributions (Ubuntu 20.04, Debian 11, RHEL 8).
 - A `liveServe.root` folder that does not exist yet (such as `dist` before a build) is reported as such, instead of as a missing binary.
 - Clicking **Go Live** again while it starts cancels it, without an error; clicking twice quickly no longer starts two servers.
