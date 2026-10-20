@@ -9,7 +9,15 @@ permissions:
   contents: write
 
 jobs:
+  # Before anything is built: the tag must match the versions in the repository.
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash .github/scripts/check-tag.sh "$GITHUB_REF_NAME"
+
   build:
+    needs: version
     strategy:
       fail-fast: false
       matrix:
