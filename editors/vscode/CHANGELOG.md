@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3 (2026-10-20)
+
+- Display name **live-serve-rs: Go Live without Node**, as the VS Code Marketplace no longer accepts the old one. Nothing else changes.
+
 ## 0.4.2 (2026-10-20)
 
 - Renamed to `nguyentruong354.live-serve-rs`, as the name `live-serve-native` can no longer be used on the VS Code Marketplace. If you installed `nguyentruong354.live-serve-native` (or `nguyentruong354.live-serve`) from Open VSX, uninstall it and install this one; your `liveServe.*` settings carry over.

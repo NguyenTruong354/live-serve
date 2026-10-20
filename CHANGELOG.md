@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3 (2026-10-20)
+
+- The VS Code extension's display name is now **live-serve-rs: Go Live without Node**: the VS Code Marketplace keeps the display name of a removed extension too, so the old one cannot be used there. Nothing else changes.
+
 ## 0.4.2 (2026-10-20)
 
 - The VS Code extension is now `nguyentruong354.live-serve-rs`, on the VS Code Marketplace and Open VSX alike. The name `live-serve-native` can no longer be used on the Marketplace. Settings (`liveServe.*`), commands and the server are unchanged; on Open VSX, uninstall `nguyentruong354.live-serve-native` and install `live-serve-rs`.
