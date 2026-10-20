@@ -3,7 +3,7 @@
 [![CI](https://github.com/NguyenTruong354/live-serve/actions/workflows/ci.yml/badge.svg)](https://github.com/NguyenTruong354/live-serve/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/live-serve.svg)](https://crates.io/crates/live-serve)
 
-A tiny static dev server that reloads the page when files change. Think VS Code's Live Server, as a single 1.4 MB binary with no Node.js. Run it from the command line, from VS Code or from Zed, for any project on Windows, macOS and Linux.
+A tiny static dev server that reloads the page when files change. Think VS Code's Live Server, as a single binary under 3 MB with no Node.js. Run it from the command line, from VS Code or from Zed, for any project on Windows, macOS and Linux.
 
 <img alt="Saving style.css swaps the stylesheet without a reload (the page's load time stays the same); saving index.html reloads the page" src="https://raw.githubusercontent.com/NguyenTruong354/live-serve/main/docs/images/demo.gif" width="960">
 
@@ -17,7 +17,7 @@ Compared with [`live-server`](https://www.npmjs.com/package/live-server), the pa
 | HTML page with the reload script | **0.54 ms** | 0.86 ms |
 | First response after start | **45 ms** | ~1.5 s |
 | Memory | **10 MB** | ~240 MB |
-| Install | one 1.4 MB binary | Node.js + packages |
+| Install | one binary under 3 MB | Node.js + packages |
 
 Static files cost the same for both; the difference is everything around them. It also does a few things live-server does not:
 
@@ -58,6 +58,7 @@ Common cases:
 | stop reloads from a busy build folder | `live-serve --ignore dist,coverage` |
 | reload from WSL, Docker or a network drive | `live-serve --poll` |
 | open a page other than the root | `live-serve --open=docs/` |
+| serve over HTTPS (camera, service workers on a phone) | `live-serve --https`, or `--cert` and `--key` from mkcert; see [HTTPS](#https) |
 
 Troubleshooting:
 
@@ -155,6 +156,8 @@ live-serve init <vscode|zed> [DIR] [--port N]
 | `--poll` | off | scan for changes every 300 ms (skipping ignored folders) instead of using file system events; for WSL, Docker volumes and network drives, where events do not arrive. Reloads take about half a second instead of about 130 ms |
 | `--open` | off | open the default browser once the server is up |
 | `--open=PAGE` | | the same, at a page (`--open=docs/`, `--open=about.html`) |
+| `--https` | off | serve over HTTPS with a self-signed certificate, made and kept for you; the browser warns once |
+| `--cert FILE` `--key FILE` | | serve over HTTPS with this certificate and its unencrypted private key (PEM), e.g. from mkcert |
 | `--exit-on-stdin-close` | off | stop when standard input closes; for editors and tools that start live-serve, so it never outlives them (the VS Code extension uses it) |
 | `-V, --version` | | |
 | `-h, --help` | | |
@@ -166,9 +169,34 @@ live-serve                          # serve the current folder on 5500
 live-serve ./dist --spa --open      # a built single-page app, in the browser
 live-serve . --port 8080 --ignore target,coverage
 live-serve --host 0.0.0.0           # test on your phone over Wi-Fi
+live-serve --https                  # over HTTPS, with a self-signed certificate
 ```
 
 Stop it with `Ctrl+C`.
+
+## HTTPS
+
+On your own computer you rarely need it: browsers treat `http://localhost` and `http://127.0.0.1` as secure, so the camera, service workers, `crypto.subtle` and the clipboard work there. Over Wi-Fi it is another matter: a phone that opens `http://192.168.1.20:5500` gets none of them. Two ways to serve HTTPS:
+
+**`--https`: quick, with a warning.** live-serve makes a self-signed certificate for `localhost`, `127.0.0.1`, `::1` and, with `--host 0.0.0.0`, this machine's network address, so the phone sees a matching name. It keeps one for each address in your cache folder (`%LOCALAPPDATA%\live-serve`, `~/Library/Caches/live-serve` or `~/.cache/live-serve`; `LIVE_SERVE_CACHE_DIR` moves it), so switching `--host` back and forth does not replace it, and makes a new one a week before it runs out (it lasts 30 days). Browsers do not know it, so each one warns once and you choose to continue. Some features may still refuse a certificate you only chose to accept (Chrome is known to do so for service workers); use `--cert` and `--key` for those.
+
+```
+live-serve --https --host 0.0.0.0
+```
+
+**`--cert` and `--key`: trusted, set up once.** [mkcert](https://github.com/FiloSottile/mkcert) makes a local certificate authority that your browsers trust, and certificates signed by it:
+
+```
+mkcert -install
+mkcert localhost 127.0.0.1 ::1 192.168.1.20      # your network address
+live-serve --cert localhost+3.pem --key localhost+3-key.pem --host 0.0.0.0
+```
+
+For a phone, install mkcert's root certificate on it too (`mkcert -CAROOT` shows where it is; iOS also needs it turned on under Settings → General → About → Certificate Trust Settings).
+
+**Or a tunnel**, which brings a real certificate and no setup on the phone: `cloudflared tunnel --url http://localhost:5500`, then `live-serve --allow-host <the tunnel's name>`.
+
+Either way, the reload script connects over `wss://` by itself, and a plain `http://` address typed out of habit is redirected to `https://`.
 
 ## VS Code
 
@@ -211,7 +239,7 @@ This writes `.zed/tasks.json` with two tasks: **live-serve (5500)** and **live-s
 
 ## How it works
 
-Each HTML page, including directory listings, gets a small script just before `</body>`. The script opens a WebSocket to `/__live/ws` on the same server.
+Each HTML page, including directory listings, gets a small script just before `</body>`. The script opens a WebSocket to `/__live/ws` on the same server (`wss://` over HTTPS).
 
 The server watches the folder recursively. It waits until no file has changed for 120 ms, so a build that writes many files causes one reload, not many; during a build that runs longer than 2 seconds it reloads every 2 seconds. It then sends `css` if only stylesheets changed, or `reload` otherwise. Editor temporary files (`a.css~`, Vim swap files, JetBrains safe-write copies, `*.tmp`) are ignored, so saving a stylesheet still swaps it in place.
 
@@ -231,6 +259,8 @@ With `--no-reload`, there is no script and no watcher.
 cargo test
 cargo build --release      # target/release/live-serve(.exe)
 ```
+
+HTTPS uses [rustls](https://github.com/rustls/rustls) with the `ring` crypto backend, which compiles a little C and assembly: a C compiler must be on `PATH` (on Windows on Arm, `clang`).
 
 On Windows, the usual `x86_64-pc-windows-msvc` toolchain works out of the box once Visual Studio Build Tools are installed. With the `x86_64-pc-windows-gnu` toolchain instead, you also need a MinGW-w64 toolchain on `PATH`, because the build calls `dlltool` and `as`.
 

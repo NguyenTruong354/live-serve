@@ -29,7 +29,10 @@ pkg-fmt = "zip"
 axum = { version = "0.8.9", features = ["ws"] }
 notify = "8.2.0"
 percent-encoding = "2.3.2"
+rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem", "crypto"] }
+rustls-pki-types = { version = "1.15.1", features = ["std"] }
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time", "signal"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 tower = { version = "0.5.3", features = ["util"] }
 tower-http = { version = "0.7.1", features = ["fs"] }
 

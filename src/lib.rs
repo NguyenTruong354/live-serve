@@ -8,8 +8,11 @@
 
 pub mod init;
 pub mod listing;
+pub mod tls;
 
 pub use listing::{Entry, directory_listing};
+/// The TLS library `Config::tls` takes its settings from.
+pub use tokio_rustls::rustls;
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -310,11 +313,13 @@ pub struct Config {
     /// Scan the folder for changes every POLL_INTERVAL instead of waiting for the system's file events,
     /// which do not arrive from WSL, Docker volumes or network drives.
     pub poll: bool,
+    /// Serve over HTTPS with these settings (see `tls::from_pem_files`, `tls::self_signed`); None for HTTP.
+    pub tls: Option<Arc<rustls::ServerConfig>>,
 }
 
 impl Config {
     /// Serve `root` with the defaults: reload on, no SPA fallback, nothing extra ignored,
-    /// no CORS, dotfiles hidden, only local host names, native file events.
+    /// no CORS, dotfiles hidden, only local host names, native file events, plain HTTP.
     pub fn new(root: PathBuf) -> Config {
         Config {
             root,
@@ -325,6 +330,7 @@ impl Config {
             dotfiles: false,
             allowed_hosts: vec![],
             poll: false,
+            tls: None,
         }
     }
 }
@@ -403,12 +409,13 @@ fn taken_alongside(host: &str, port: u16) -> bool {
     )
 }
 
-/// The URL to show for a bound address ("0.0.0.0" → localhost, IPv6 in brackets).
-pub fn display_url(host: &str, port: u16) -> String {
+/// The URL to show for a bound address ("0.0.0.0" → localhost, IPv6 in brackets), over `https` or not.
+pub fn display_url(host: &str, port: u16, https: bool) -> String {
+    let scheme = if https { "https" } else { "http" };
     match host {
-        "0.0.0.0" | "::" | "[::]" => format!("http://localhost:{port}/"),
-        h if h.contains(':') && !h.starts_with('[') => format!("http://[{h}]:{port}/"),
-        h => format!("http://{h}:{port}/"),
+        "0.0.0.0" | "::" | "[::]" => format!("{scheme}://localhost:{port}/"),
+        h if h.contains(':') && !h.starts_with('[') => format!("{scheme}://[{h}]:{port}/"),
+        h => format!("{scheme}://{h}:{port}/"),
     }
 }
 
@@ -876,7 +883,10 @@ pub async fn serve(listener: TcpListener, cfg: Config) -> std::io::Result<()> {
         dotfiles: cfg.dotfiles,
         allowed_hosts: Arc::new(cfg.allowed_hosts),
     };
-    axum::serve(listener, router(state)).await
+    match cfg.tls {
+        Some(tls) => axum::serve(tls::TlsListener::new(listener, tls)?, router(state)).await,
+        None => axum::serve(listener, router(state)).await,
+    }
 }
 
 #[cfg(test)]
@@ -976,11 +986,13 @@ mod tests {
 
     #[test]
     fn display_urls() {
-        assert_eq!(display_url("127.0.0.1", 5500), "http://127.0.0.1:5500/");
-        assert_eq!(display_url("0.0.0.0", 8080), "http://localhost:8080/");
-        assert_eq!(display_url("::", 8080), "http://localhost:8080/");
-        assert_eq!(display_url("::1", 5500), "http://[::1]:5500/");
-        assert_eq!(display_url("localhost", 3000), "http://localhost:3000/");
+        assert_eq!(display_url("127.0.0.1", 5500, false), "http://127.0.0.1:5500/");
+        assert_eq!(display_url("0.0.0.0", 8080, false), "http://localhost:8080/");
+        assert_eq!(display_url("::", 8080, false), "http://localhost:8080/");
+        assert_eq!(display_url("::1", 5500, false), "http://[::1]:5500/");
+        assert_eq!(display_url("localhost", 3000, false), "http://localhost:3000/");
+        assert_eq!(display_url("127.0.0.1", 5500, true), "https://127.0.0.1:5500/");
+        assert_eq!(display_url("0.0.0.0", 8443, true), "https://localhost:8443/");
     }
 
     #[test]
@@ -1045,8 +1057,13 @@ mod tests {
         assert_eq!(strip_verbatim(Path::new("/home/me/site")), PathBuf::from("/home/me/site"));
     }
 
+    /// The port tests take a free port, let it go and bind it again. Run side by side, the system may hand
+    /// that port to another of them in between, so they take turns.
+    static PORTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[tokio::test]
     async fn binds_the_next_port_unless_strict() {
+        let _one_at_a_time = PORTS.lock();
         let taken = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = taken.local_addr().unwrap().port();
         let next = bind("127.0.0.1", port, false).await.unwrap();
@@ -1056,6 +1073,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_port_held_on_all_addresses_is_busy_for_loopback_too() {
+        let _one_at_a_time = PORTS.lock();
         // python -m http.server and many others listen on 0.0.0.0.
         let other = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
         let port = other.local_addr().unwrap().port();
@@ -1067,6 +1085,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_port_held_on_loopback_is_busy_for_all_addresses_too() {
+        let _one_at_a_time = PORTS.lock();
         let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = other.local_addr().unwrap().port();
         let ours = bind("0.0.0.0", port, false).await.unwrap();
@@ -1075,6 +1094,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_free_port_is_taken_as_asked() {
+        let _one_at_a_time = PORTS.lock();
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let ours = bind("127.0.0.1", port, true).await.unwrap();
         assert_eq!(ours.local_addr().unwrap().port(), port);

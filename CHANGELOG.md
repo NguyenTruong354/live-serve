@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- HTTPS. `--https` serves with a self-signed certificate that live-serve makes for `localhost`, `127.0.0.1`, `::1` and, with `--host 0.0.0.0`, the network address, keeps in the cache folder, one for each address, and renews a week before its 30 days run out; the browser warns once for each. `--cert` and `--key` take a certificate the browser trusts, such as one from mkcert. Live reload goes over `wss://`, and a plain `http://` request to the HTTPS port is redirected. Built on rustls with ring; the binary grows by about 1.2 MB.
 - Live reload keeps working when a build deletes the served folder and makes it again (`rm -rf dist`). Until now the watch died with the old folder, and nothing reloaded after the first rebuild.
 - A port is in use also when another program listens on it at the other kind of address: on `0.0.0.0` while live-serve asks for `127.0.0.1`, or the other way round. Windows and macOS let both binds coexist, so live-serve used to take localhost away from that program, or print a localhost address that the other program answered.
 - `--host 0.0.0.0` also prints the address to open from a phone or another computer: `live-serve: on your network: http://192.168.1.20:5500/`.

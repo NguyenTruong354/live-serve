@@ -1,4 +1,5 @@
-//! live-serve [DIR] [--port N] [--host H] [--ignore a,b] [--allow-host a,b] [--cors] [--dotfiles] [--poll] [--open[=PAGE]]
+//! live-serve [DIR] [--port N] [--host H] [--ignore a,b] [--allow-host a,b] [--cors] [--dotfiles] [--poll]
+//!            [--https | --cert FILE --key FILE] [--open[=PAGE]]
 //! live-serve init <vscode|zed> [DIR] [--port N]
 
 use std::io::Write;
@@ -6,7 +7,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use live_serve::init::{Editor, InitOutcome, init, tasks_json, tasks_path};
-use live_serve::{Config, bind, display_url, lan_address, page_url, serve, strip_verbatim};
+use live_serve::{Config, bind, display_url, lan_address, page_url, serve, strip_verbatim, tls};
 
 const HELP: &str = "live-serve: a static dev server that reloads the page when files change
 
@@ -28,6 +29,10 @@ Options:
       --poll        scan for changes every 300 ms (skipping ignored folders) instead of
                     using file system events, for WSL, Docker volumes and network drives
                     where events do not arrive; reloads take about half a second
+      --https       serve over HTTPS with a self-signed certificate, made and kept for you
+                    (the browser warns once; for one it trusts, use --cert and --key)
+      --cert FILE   serve over HTTPS with this certificate (PEM), e.g. made by mkcert
+      --key FILE    and its private key (unencrypted PEM)
       --open        open the browser once the server is up
       --open=PAGE   the same, at PAGE (e.g. --open=docs/ or --open=about.html)
       --exit-on-stdin-close
@@ -51,6 +56,17 @@ struct ServeArgs {
     /// The page to open in the browser ("" for the root), if any.
     open: Option<String>,
     exit_on_stdin_close: bool,
+    https: Https,
+}
+
+/// How to serve HTTPS, if at all.
+#[derive(Debug, PartialEq)]
+enum Https {
+    Off,
+    /// `--https`: a self-signed certificate, made and kept in the cache folder.
+    SelfSigned,
+    /// `--cert` and `--key`.
+    Files { cert: PathBuf, key: PathBuf },
 }
 
 enum Command {
@@ -84,7 +100,9 @@ fn parse(args: Vec<String>) -> Result<Command, String> {
         poll: false,
         open: None,
         exit_on_stdin_close: false,
+        https: Https::Off,
     };
+    let (mut cert, mut key, mut self_signed) = (None, None, false);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(Command::Help),
@@ -112,10 +130,20 @@ fn parse(args: Vec<String>) -> Result<Command, String> {
             // Only with "=": a bare word after --open stays the folder to serve.
             s if s.starts_with("--open=") => serve.open = Some(s["--open=".len()..].to_string()),
             "--exit-on-stdin-close" => serve.exit_on_stdin_close = true,
+            "--https" => self_signed = true,
+            "--cert" => cert = Some(PathBuf::from(iter.next().ok_or("--cert needs a file")?)),
+            "--key" => key = Some(PathBuf::from(iter.next().ok_or("--key needs a file")?)),
             s if s.starts_with('-') => return Err(format!("unknown option: {s}")),
             dir => serve.root = PathBuf::from(dir),
         }
     }
+    serve.https = match (cert, key) {
+        (Some(cert), Some(key)) => Https::Files { cert, key },
+        (Some(_), None) => return Err("--cert needs --key too (the certificate's private key)".into()),
+        (None, Some(_)) => return Err("--key needs --cert too (the certificate it belongs to)".into()),
+        (None, None) if self_signed => Https::SelfSigned,
+        (None, None) => Https::Off,
+    };
     let root = serve
         .root
         .canonicalize()
@@ -167,6 +195,28 @@ fn run_init(editor: Editor, root: &PathBuf, port: u16) -> ExitCode {
 
 async fn run_serve(args: ServeArgs) -> ExitCode {
     say(&format!("live-serve: starting in {}", args.root.display()));
+    // On all addresses it is meant for other devices, which open it by this machine's network address.
+    let everywhere = args.host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_unspecified()) || args.host == "[::]";
+    let lan = if everywhere { lan_address() } else { None };
+    let (tls, self_signed) = match &args.https {
+        Https::Off => (None, None),
+        Https::Files { cert, key } => match tls::from_pem_files(cert, key) {
+            Ok(config) => (Some(config), None),
+            Err(e) => {
+                say(&format!("live-serve: error: {e}"));
+                return ExitCode::from(1);
+            }
+        },
+        Https::SelfSigned => match tls::self_signed(&tls::cache_dir(), &tls::certificate_names(&args.host, lan)) {
+            Ok((config, cert)) => (Some(config), Some(cert)),
+            Err(e) => {
+                say(&format!("live-serve: error: cannot make a self-signed certificate: {e}"));
+                return ExitCode::from(1);
+            }
+        },
+    };
+    let https = tls.is_some();
+
     let listener = match bind(&args.host, args.port, args.strict_port).await {
         Ok(l) => l,
         Err(e) => {
@@ -178,13 +228,17 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     if port != args.port {
         say(&format!("live-serve: port {} is in use, using {port}", args.port));
     }
-    let url = display_url(&args.host, port);
+    let url = display_url(&args.host, port, https);
     say(&format!("live-serve: {url}"));
-    // On all addresses it is meant for other devices: say which address they should open.
-    // After the line above, which editors read as the server's URL.
-    let everywhere = args.host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_unspecified()) || args.host == "[::]";
-    if everywhere && let Some(ip) = lan_address() {
-        say(&format!("live-serve: on your network: {}", display_url(&ip.to_string(), port)));
+    // Say which address other devices should open, after the line above, which editors read as the URL.
+    if let Some(ip) = lan {
+        say(&format!("live-serve: on your network: {}", display_url(&ip.to_string(), port, https)));
+    }
+    if let Some(cert) = self_signed {
+        say(&format!(
+            "live-serve: the certificate is self-signed, so the browser warns once; it is kept in {}",
+            cert.display()
+        ));
     }
     if let Some(page) = &args.open {
         open_browser(&page_url(&url, page));
@@ -198,6 +252,7 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     cfg.cors = args.cors;
     cfg.dotfiles = args.dotfiles;
     cfg.poll = args.poll;
+    cfg.tls = tls;
     // The name it was started on is answered too, e.g. `--host mybox.lan`.
     cfg.allowed_hosts = args.allow_host;
     cfg.allowed_hosts.push(args.host);
@@ -270,6 +325,21 @@ mod tests {
         let args = serve_args(&["--open", "src"]);
         assert_eq!(args.open.as_deref(), Some(""));
         assert!(args.root.ends_with("src"), "{}", args.root.display());
+    }
+
+    #[test]
+    fn https_comes_from_files_or_a_self_signed_certificate() {
+        assert_eq!(serve_args(&[]).https, Https::Off);
+        assert_eq!(serve_args(&["--https"]).https, Https::SelfSigned);
+        let files = Https::Files { cert: "c.pem".into(), key: "k.pem".into() };
+        assert_eq!(serve_args(&["--cert", "c.pem", "--key", "k.pem"]).https, files);
+        // Files win over a self-signed one.
+        assert_eq!(serve_args(&["--https", "--key", "k.pem", "--cert", "c.pem"]).https, files);
+        for half in [&["--cert", "c.pem"][..], &["--key", "k.pem"][..]] {
+            let error = parse(half.iter().map(|a| a.to_string()).collect()).err().unwrap();
+            assert!(error.contains("--cert") && error.contains("--key"), "{error}");
+        }
+        assert!(parse(vec!["--cert".into()]).is_err(), "a file is needed");
     }
 
     #[test]
