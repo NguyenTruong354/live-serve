@@ -93,3 +93,18 @@ jobs:
           files: |
             live-serve-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive }}
             editors/vscode/live-serve-${{ matrix.vscode }}-*.vsix
+
+  # Once every build has attached its .vsix: publish them to Open VSX (VSCodium, Cursor, Gitpod...).
+  # Skipped, without failing the release, until the OVSX_PAT secret is set.
+  open-vsx:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: bash .github/scripts/publish-open-vsx.sh "$GITHUB_REF_NAME"
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+          GH_TOKEN: ${{ github.token }}
