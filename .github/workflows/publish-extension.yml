@@ -1,0 +1,34 @@
+name: Publish extension
+
+# Publishes the VS Code packages of a release that is already out (such as v0.4.0, from before the
+# release workflow did it) to Open VSX. Run it from Actions > Publish extension > Run workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag whose .vsix files to publish, e.g. v0.4.0
+        required: true
+      dry_run:
+        description: Only download and check the packages, publish nothing
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  open-vsx:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      # The tag goes in through the environment, never pasted into the script.
+      - run: bash .github/scripts/publish-open-vsx.sh "$TAG"
+        env:
+          TAG: ${{ inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          REQUIRE_TOKEN: "1"
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+          GH_TOKEN: ${{ github.token }}
