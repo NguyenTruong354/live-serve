@@ -24,7 +24,8 @@ fn site(name: &str) -> PathBuf {
 }
 
 /// An API that answers with what it was sent: method, path and query, a few headers, and the body.
-/// `/created` answers 201 with a header of its own; `/redirect` sends to the backend's own `/login`.
+/// `/created` answers 201 with a header of its own; `/redirect` sends to the backend's own `/login` in
+/// full, `/relative` from its root (`/login`), as most frameworks do.
 async fn backend(name: &'static str) -> u16 {
     let app = Router::new().fallback(move |method: Method, uri: Uri, headers: HeaderMap, body: Bytes| async move {
         let port = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
@@ -34,6 +35,7 @@ async fn backend(name: &'static str) -> u16 {
                 let to = format!("http://{port}/login?next=1");
                 (StatusCode::FOUND, [(header::LOCATION, to)]).into_response()
             }
+            "/relative" => (StatusCode::FOUND, [(header::LOCATION, "/login?next=1")]).into_response(),
             _ => {
                 let seen = |h: &str| headers.get(h).and_then(|v| v.to_str().ok()).unwrap_or("-").to_string();
                 format!(
@@ -146,6 +148,10 @@ async fn a_backends_redirect_to_itself_points_back_under_the_prefix() {
     let (head, _) = get(port, "/api/redirect").await;
     assert!(head.starts_with("http/1.1 302"), "{head}");
     assert!(head.contains("location: /api/login?next=1\r\n"), "{head}");
+    // `res.redirect("/login")` and the like: from the backend's root, so under the prefix too.
+    let (head, _) = get(port, "/api/relative").await;
+    assert!(head.starts_with("http/1.1 302"), "{head}");
+    assert!(head.contains("location: /api/login?next=1\r\n"), "{head}");
 }
 
 #[tokio::test]
@@ -167,6 +173,14 @@ async fn websockets_are_refused_plainly_and_hosts_still_checked() {
     let (head, body) = send(port, &upgrade, "").await;
     assert!(head.starts_with("http/1.1 501"), "{head}");
     assert!(body.contains("WebSockets"), "{body}");
+    // Another upgrade (curl --http2 over http://) is only an offer: the request goes on as HTTP/1.1.
+    let h2c = format!(
+        "GET /api/users HTTP/1.1\r\nHost: localhost:{port}\r\nUpgrade: h2c\r\nConnection: Upgrade, HTTP2-Settings\r\n\
+HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA"
+    );
+    let (head, body) = send(port, &h2c, "").await;
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+    assert!(body.starts_with("api GET /users "), "{body}");
     // An outside site's name pointed at this machine cannot reach the backend through it either.
     let (head, _) = send(port, "GET /api/users HTTP/1.1\r\nHost: evil.example", "").await;
     assert!(head.starts_with("http/1.1 403"), "{head}");

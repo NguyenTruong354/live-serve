@@ -88,6 +88,43 @@ fn upstream_url(proxy: &Proxy, path: &str, query: Option<&str>) -> String {
     url
 }
 
+/// Whether the request asks to become a WebSocket, which `--proxy` does not carry yet.
+fn wants_websocket(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::UPGRADE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .any(|protocol| protocol.trim().to_ascii_lowercase().starts_with("websocket"))
+}
+
+/// Where a redirect from the backend (`Location`) points on live-serve, when it points under the
+/// target: given in full (`http://localhost:3000/login`) or from the backend's root (`/login`, as most
+/// frameworks write it). With `/api=http://localhost:3000`, both become `/api/login`. None for anything
+/// else (another site, a path outside the target's, `login` relative to the page), which stays as it is.
+fn local_location(proxy: &Proxy, location: &str) -> Option<String> {
+    let rest = match location.strip_prefix(&proxy.target) {
+        Some(rest) => rest,
+        // From the root, but not `//host/…`, which names another host.
+        None if location.starts_with('/') && !location.starts_with("//") => {
+            location.strip_prefix(target_path(&proxy.target))?
+        }
+        None => return None,
+    };
+    if !(rest.is_empty() || rest.starts_with(['/', '?'])) {
+        return None;
+    }
+    // `rest` is "" or "?…" for the target itself: that is the prefix's folder.
+    let rest = if rest.starts_with('/') { rest.to_string() } else { format!("/{rest}") };
+    Some(format!("{}{rest}", proxy.prefix))
+}
+
+/// The path part of a target ("/v1" in `http://localhost:3000/v1`), "" when it has none.
+fn target_path(target: &str) -> &str {
+    let after_scheme = target.split_once("://").map_or(target, |(_, rest)| rest);
+    after_scheme.find('/').map_or("", |i| &after_scheme[i..])
+}
+
 /// Headers about one hop, never passed on (RFC 9110 §7.6.1), plus any the request's Connection names.
 fn drop_hop_by_hop(headers: &mut HeaderMap) {
     let named: Vec<HeaderName> = headers
@@ -132,7 +169,9 @@ impl Forwarder {
     /// headers and a redirect to the backend's own address, which points back under the prefix.
     pub(crate) async fn forward(&self, proxy: &Proxy, request: Request, https: bool) -> Response {
         let (mut parts, body) = request.into_parts();
-        if parts.headers.contains_key(header::UPGRADE) {
+        // Other upgrades (curl's `Upgrade: h2c` over http://) are offers the backend may ignore: the header
+        // is one-hop and stays behind, and the request goes on as plain HTTP/1.1.
+        if wants_websocket(&parts.headers) {
             return text(StatusCode::NOT_IMPLEMENTED, "live-serve: --proxy does not carry WebSockets yet".into());
         }
         let url = upstream_url(proxy, parts.uri.path(), parts.uri.query());
@@ -158,14 +197,11 @@ impl Forwarder {
                 // must not turn the answer into HTTP/1.0, which closes the browser's connection each time.
                 parts.version = version;
                 drop_hop_by_hop(&mut parts.headers);
-                if let Some(location) = parts.headers.get(header::LOCATION).and_then(|l| l.to_str().ok())
-                    && let Some(rest) = location.strip_prefix(&proxy.target)
-                    && (rest.is_empty() || rest.starts_with(['/', '?']))
+                let location = parts.headers.get(header::LOCATION).and_then(|l| l.to_str().ok());
+                if let Some(local) = location.and_then(|l| local_location(proxy, l))
+                    && let Ok(value) = HeaderValue::from_str(&local)
                 {
-                    let local = format!("{}{}", proxy.prefix, if rest.is_empty() { "/" } else { rest });
-                    if let Ok(value) = HeaderValue::from_str(&local) {
-                        parts.headers.insert(header::LOCATION, value);
-                    }
+                    parts.headers.insert(header::LOCATION, value);
                 }
                 Response::from_parts(parts, Body::new(body))
             }
@@ -232,6 +268,48 @@ mod tests {
         let kept = proxy("/api=http://localhost:3000/api");
         assert_eq!(upstream_url(&kept, "/api/users", None), "http://localhost:3000/api/users");
         assert_eq!(upstream_url(&kept, "/api", None), "http://localhost:3000/api");
+    }
+
+    #[test]
+    fn redirects_under_the_target_point_back_under_the_prefix() {
+        let root = proxy("/api=http://localhost:3000");
+        let at = |location| local_location(&root, location);
+        assert_eq!(at("http://localhost:3000/login?next=1").as_deref(), Some("/api/login?next=1"));
+        assert_eq!(at("http://localhost:3000").as_deref(), Some("/api/"));
+        assert_eq!(at("http://localhost:3000?x=1").as_deref(), Some("/api/?x=1"));
+        // From the backend's root, as Express, Flask and most others write it.
+        assert_eq!(at("/login").as_deref(), Some("/api/login"));
+        assert_eq!(at("/").as_deref(), Some("/api/"));
+        assert_eq!(at("/?x=1").as_deref(), Some("/api/?x=1"));
+        // Left as they are: another site, another port, another host by `//`, relative to the page.
+        assert_eq!(at("https://example.com/login"), None);
+        assert_eq!(at("http://localhost:30001/login"), None);
+        assert_eq!(at("//example.com/login"), None);
+        assert_eq!(at("login"), None);
+
+        let v1 = proxy("/api=http://localhost:3000/v1");
+        assert_eq!(local_location(&v1, "/v1/login").as_deref(), Some("/api/login"));
+        assert_eq!(local_location(&v1, "/v1").as_deref(), Some("/api/"));
+        assert_eq!(local_location(&v1, "/v10/x"), None, "whole segments only");
+        assert_eq!(local_location(&v1, "/login"), None, "outside the target's path");
+
+        let everything = proxy("/=http://localhost:3000");
+        assert_eq!(local_location(&everything, "/login").as_deref(), Some("/login"));
+        assert_eq!(local_location(&everything, "http://localhost:3000").as_deref(), Some("/"));
+    }
+
+    #[test]
+    fn only_websocket_upgrades_are_refused() {
+        let with = |value| {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::UPGRADE, HeaderValue::from_static(value));
+            wants_websocket(&headers)
+        };
+        assert!(with("websocket"));
+        assert!(with("WebSocket"));
+        assert!(with("h2c, websocket"));
+        assert!(!with("h2c"), "curl --http2 offers this over http://");
+        assert!(!wants_websocket(&HeaderMap::new()));
     }
 
     #[test]

@@ -189,8 +189,9 @@ live-serve --proxy /api=http://localhost:3000
 Then `fetch("/api/users")` goes to `http://localhost:3000/users`. As in VS Code's Live Server, `PATH` is replaced by the target's path, so to keep it, put it in the target too: `--proxy /api=http://localhost:3000/api` sends `/api/users` to `http://localhost:3000/api/users`.
 
 - `PATH` covers itself and what is under it (`/api`, `/api/users`, not `/apix`); with several rules, the longest `PATH` wins. Proxied paths go to the backend even where a file of that name exists.
-- Every method and body is passed on as it is, with `Host` set to the backend and `X-Forwarded-Host` and `X-Forwarded-Proto` added; the answer comes back as it is, with `Cache-Control: no-store`. A redirect to the backend's own address comes back under `PATH`.
-- If the backend is not running, the page gets `502` with what went wrong. The backend must be `http://`; WebSockets are not passed on yet.
+- Every method and body is passed on as it is, with `Host` set to the backend and `X-Forwarded-Host` and `X-Forwarded-Proto` added; the answer comes back as it is, with `Cache-Control: no-store`. A redirect to the backend, in full (`http://localhost:3000/login`) or from its root (`/login`), comes back under `PATH` (`/api/login`).
+- If the backend is not running, the page gets `502` with what went wrong. The backend must be `http://`; WebSockets are not passed on yet (other upgrade offers, such as `curl --http2`, go on as plain HTTP/1.1).
+- With `--host 0.0.0.0` (or any address other devices reach), they reach the backend through live-serve too, even when the backend itself listens on this machine only. live-serve says so at start; leave `--proxy` out, or keep the default host, when the backend must stay private.
 - In Git Bash on Windows, write the path without its leading slash (`--proxy api=http://localhost:3000`): Git Bash rewrites arguments that start with `/` into Windows paths.
 
 ## HTTPS

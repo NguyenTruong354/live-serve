@@ -246,6 +246,10 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
         let path = if rule.prefix.is_empty() { "/" } else { &rule.prefix };
         say(&format!("live-serve: {path} goes to {}", rule.target));
     }
+    // A backend that listens on this machine only is reachable from elsewhere through live-serve.
+    if !args.proxies.is_empty() && !this_machine_only(&args.host) {
+        say("live-serve: note: other devices that reach live-serve reach the proxied servers through it too");
+    }
     if let Some(cert) = self_signed {
         say(&format!(
             "live-serve: the certificate is self-signed, so the browser warns once; it is kept in {}",
@@ -306,6 +310,15 @@ async fn stdin_closed(enabled: bool) {
     let _ = rx.await;
 }
 
+/// Whether a server on `host` is reachable from this machine only: `localhost`, `*.localhost` or a
+/// loopback address.
+fn this_machine_only(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    host == "localhost"
+        || host.ends_with(".localhost")
+        || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
 fn open_browser(url: &str) {
     #[cfg(windows)]
     let result = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
@@ -353,6 +366,16 @@ mod tests {
             assert!(error.contains("--cert") && error.contains("--key"), "{error}");
         }
         assert!(parse(vec!["--cert".into()]).is_err(), "a file is needed");
+    }
+
+    #[test]
+    fn only_loopback_hosts_keep_proxied_servers_on_this_machine() {
+        for host in ["127.0.0.1", "127.0.0.2", "localhost", "LocalHost", "app.localhost", "::1", "[::1]"] {
+            assert!(this_machine_only(host), "{host}");
+        }
+        for host in ["0.0.0.0", "::", "[::]", "192.168.1.20", "mybox.lan", "localhost.example"] {
+            assert!(!this_machine_only(host), "{host}");
+        }
     }
 
     #[test]
