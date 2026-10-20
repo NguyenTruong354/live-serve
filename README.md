@@ -58,6 +58,7 @@ Common cases:
 | stop reloads from a busy build folder | `live-serve --ignore dist,coverage` |
 | reload from WSL, Docker or a network drive | `live-serve --poll` |
 | open a page other than the root | `live-serve --open=docs/` |
+| call your API server without CORS | `live-serve --proxy /api=http://localhost:3000`; see [Proxy](#proxy) |
 | serve over HTTPS (camera, service workers on a phone) | `live-serve --https`, or `--cert` and `--key` from mkcert; see [HTTPS](#https) |
 
 Troubleshooting:
@@ -76,6 +77,7 @@ Troubleshooting:
 - **Directory listings** for folders without an `index.html`: a clickable path, icons by file type, size and last-modified columns (in your local time), and a filter box (press `/`). They follow your system's light or dark theme, work on phones, and stay light: a folder of 1,200 entries renders in about 2 ms.
 - **Media friendly.** Files stream from disk, with HTTP Range support so audio and video can seek.
 - **Single-page apps.** With `--spa`, unknown routes serve `/index.html`; missing assets still return 404.
+- **Proxy to your API.** `--proxy /api=http://localhost:3000` sends requests under `/api` to a backend, so the page calls it on its own origin, without CORS.
 - **HTTPS when you need it.** `--https` makes a self-signed certificate (with your network address, for phones); `--cert` and `--key` take a trusted one from mkcert. Live reload follows over `wss://`. See [HTTPS](#https).
 - **Busy port? It moves on.** If port 5500 is taken, it uses the next free port. `--strict-port` turns this off.
 - **Safe by default.** It binds to `127.0.0.1` and refuses paths that leave the served folder (`..`, encoded `..`, `\`, drive letters, symlinks pointing outside). Other websites cannot read your files: there is no CORS header unless you pass `--cors`, requests for unknown host names are refused (this stops DNS rebinding), and the reload WebSocket only accepts local pages. Dotfiles such as `.env` and `.git` are hidden unless you pass `--dotfiles`.
@@ -158,6 +160,7 @@ live-serve init <vscode|zed> [DIR] [--port N]
 | `--open` | off | open the default browser once the server is up |
 | `--open=PAGE` | | the same, at a page (`--open=docs/`, `--open=about.html`) |
 | `--https` | off | serve over HTTPS with a self-signed certificate, made and kept for you; the browser warns once |
+| `--proxy PATH=URL` | | send requests under `PATH` to another local server, `PATH` replaced by `URL`'s path; repeat for more. See [Proxy](#proxy) |
 | `--cert FILE` `--key FILE` | | serve over HTTPS with this certificate and its unencrypted private key (PEM), e.g. from mkcert |
 | `--exit-on-stdin-close` | off | stop when standard input closes; for editors and tools that start live-serve, so it never outlives them (the VS Code extension uses it) |
 | `-V, --version` | | |
@@ -174,6 +177,21 @@ live-serve --https                  # over HTTPS, with a self-signed certificate
 ```
 
 Stop it with `Ctrl+C`.
+
+## Proxy
+
+A static frontend that calls an API on another port (`fetch("http://localhost:3000/users")`) needs CORS headers from that API. With `--proxy`, the page calls its own origin instead and live-serve passes the request on:
+
+```
+live-serve --proxy /api=http://localhost:3000
+```
+
+Then `fetch("/api/users")` goes to `http://localhost:3000/users`. As in VS Code's Live Server, `PATH` is replaced by the target's path, so to keep it, put it in the target too: `--proxy /api=http://localhost:3000/api` sends `/api/users` to `http://localhost:3000/api/users`.
+
+- `PATH` covers itself and what is under it (`/api`, `/api/users`, not `/apix`); with several rules, the longest `PATH` wins. Proxied paths go to the backend even where a file of that name exists.
+- Every method and body is passed on as it is, with `Host` set to the backend and `X-Forwarded-Host` and `X-Forwarded-Proto` added; the answer comes back as it is, with `Cache-Control: no-store`. A redirect to the backend's own address comes back under `PATH`.
+- If the backend is not running, the page gets `502` with what went wrong. The backend must be `http://`; WebSockets are not passed on yet.
+- In Git Bash on Windows, write the path without its leading slash (`--proxy api=http://localhost:3000`): Git Bash rewrites arguments that start with `/` into Windows paths.
 
 ## HTTPS
 

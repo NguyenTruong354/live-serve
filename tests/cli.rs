@@ -165,3 +165,17 @@ fn an_unreadable_certificate_is_named() {
     assert_eq!(code, Some(1), "{text}");
     assert!(text.contains("live-serve: error: cannot read the certificate no-such-cert.pem"), "{text}");
 }
+
+#[test]
+fn proxies_are_listed_after_the_address() {
+    let mut server = Server::start("proxy", &["--proxy", "/api=http://localhost:3000", "--exit-on-stdin-close"]);
+    server.until("live-serve: http://127.0.0.1:");
+    assert_eq!(server.line(), "live-serve: /api goes to http://localhost:3000");
+}
+
+#[test]
+fn a_bad_proxy_rule_is_named() {
+    let (code, text) = run(&["--proxy", "/api=https://example.com"]);
+    assert_eq!(code, Some(2), "{text}");
+    assert!(text.contains("http:// servers only"), "{text}");
+}

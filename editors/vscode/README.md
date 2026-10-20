@@ -23,7 +23,7 @@ If port 5500 is taken (for example by another Live Server), it moves to the next
 | `liveServe.root` | (the folder) | folder to serve, relative to the workspace folder, e.g. `dist` |
 | `liveServe.host` | `127.0.0.1` | `0.0.0.0` lets phones on your Wi-Fi open the page |
 | `liveServe.openBrowser` | `true` | open the browser after Go Live |
-| `liveServe.args` | `[]` | more options, e.g. `["--spa"]` for single-page apps, `["--poll"]` for WSL and network drives, or `["--https"]` (see below) |
+| `liveServe.args` | `[]` | more options, e.g. `["--spa"]` for single-page apps, `["--poll"]` for WSL and network drives, `["--https"]` (see below), or `["--proxy", "/api=http://localhost:3000"]` to call your API without CORS |
 | `liveServe.binaryPath` | (bundled) | run another `live-serve` binary instead (one that knows `--exit-on-stdin-close`) |
 
 In a multi-root workspace each folder can have its own settings, except `binaryPath`. All server options are listed in the [live-serve README](https://github.com/NguyenTruong354/live-serve#command-line).

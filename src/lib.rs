@@ -8,6 +8,7 @@
 
 pub mod init;
 pub mod listing;
+pub mod proxy;
 pub mod tls;
 
 pub use listing::{Entry, directory_listing};
@@ -317,11 +318,13 @@ pub struct Config {
     pub poll: bool,
     /// Serve over HTTPS with these settings (see `tls::from_pem_files`, `tls::self_signed`); None for HTTP.
     pub tls: Option<Arc<rustls::ServerConfig>>,
+    /// `--proxy` rules: requests under these paths go to other local servers.
+    pub proxies: Vec<proxy::Proxy>,
 }
 
 impl Config {
     /// Serve `root` with the defaults: reload on, no SPA fallback, nothing extra ignored,
-    /// no CORS, dotfiles hidden, only local host names, native file events, plain HTTP.
+    /// no CORS, dotfiles hidden, only local host names, native file events, plain HTTP, no proxies.
     pub fn new(root: PathBuf) -> Config {
         Config {
             root,
@@ -333,6 +336,7 @@ impl Config {
             allowed_hosts: vec![],
             poll: false,
             tls: None,
+            proxies: vec![],
         }
     }
 }
@@ -472,6 +476,9 @@ struct AppState {
     cors: bool,
     dotfiles: bool,
     allowed_hosts: Arc<Vec<String>>,
+    proxies: Arc<Vec<proxy::Proxy>>,
+    forwarder: proxy::Forwarder,
+    https: bool,
 }
 
 /// Routes: `/__live/ws` is the WebSocket (when reloading), everything else a static file;
@@ -517,6 +524,10 @@ async fn locate_blocking(state: &AppState, url_path: &str) -> Option<Target> {
 }
 
 async fn file_handler(State(state): State<AppState>, request: Request) -> Response {
+    // Proxied paths first: they belong to the backend, even where a file of the same name exists.
+    if let Some(rule) = proxy::route(&state.proxies, request.uri().path()) {
+        return state.forwarder.forward(rule, request, state.https).await;
+    }
     let url_path = request.uri().path().to_string();
 
     let path = match locate_blocking(&state, &url_path).await {
@@ -884,6 +895,9 @@ pub async fn serve(listener: TcpListener, cfg: Config) -> std::io::Result<()> {
         cors: cfg.cors,
         dotfiles: cfg.dotfiles,
         allowed_hosts: Arc::new(cfg.allowed_hosts),
+        proxies: Arc::new(cfg.proxies),
+        forwarder: proxy::Forwarder::new(),
+        https: cfg.tls.is_some(),
     };
     match cfg.tls {
         Some(tls) => axum::serve(tls::TlsListener::new(listener, tls)?, router(state)).await,
