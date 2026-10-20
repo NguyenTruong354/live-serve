@@ -14,6 +14,22 @@ fn site(name: &str) -> PathBuf {
     dir
 }
 
+fn cache(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("live-serve-cli-cache-{name}-{}", std::process::id()))
+}
+
+/// Runs the binary with `args` to its end; returns its exit code and everything it printed.
+fn run(args: &[&str]) -> (Option<i32>, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_live-serve"))
+        .args(args)
+        .env("LIVE_SERVE_CACHE_DIR", cache("run"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    (out.status.code(), text)
+}
+
 /// Starts the binary on a free port with `args`, stdin and stdout piped; killed on drop.
 struct Server {
     child: Child,
@@ -27,6 +43,8 @@ impl Server {
             .arg(site(name))
             .args(["--port", "0"])
             .args(args)
+            // A self-signed certificate (--https) goes here, not into the user's cache folder.
+            .env("LIVE_SERVE_CACHE_DIR", cache(name))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -118,4 +136,32 @@ fn on_loopback_it_prints_only_the_local_address() {
     drop(server.child.stdin.take());
     assert!(server.exits_within(Duration::from_secs(5)));
     assert_eq!(server.line(), "live-serve: stopped (standard input closed)", "no network line in between");
+}
+
+#[test]
+fn https_with_a_self_signed_certificate_says_so_and_keeps_it() {
+    let mut server = Server::start("https", &["--https", "--exit-on-stdin-close"]);
+    let lines = server.until("live-serve: http");
+    assert!(lines.last().unwrap().starts_with("live-serve: https://127.0.0.1:"), "{lines:?}");
+    let note = server.line();
+    assert!(note.starts_with("live-serve: the certificate is self-signed"), "{note}");
+    let cert = cache("https").join("cert.pem");
+    assert!(note.ends_with(&cert.display().to_string()), "{note}");
+    assert!(std::fs::read_to_string(&cert).unwrap().starts_with("-----BEGIN CERTIFICATE-----"));
+}
+
+#[test]
+fn cert_and_key_go_together() {
+    for args in [&["--cert", "c.pem"][..], &["--key", "k.pem"][..]] {
+        let (code, text) = run(args);
+        assert_eq!(code, Some(2), "{text}");
+        assert!(text.contains("--cert") && text.contains("--key"), "{text}");
+    }
+}
+
+#[test]
+fn an_unreadable_certificate_is_named() {
+    let (code, text) = run(&["--cert", "no-such-cert.pem", "--key", "no-such-key.pem", "--port", "0"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("live-serve: error: cannot read the certificate no-such-cert.pem"), "{text}");
 }
