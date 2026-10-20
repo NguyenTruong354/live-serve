@@ -13,10 +13,10 @@ Compared with [`live-server`](https://www.npmjs.com/package/live-server), the pa
 
 | | live-serve | live-server |
 |---|---:|---:|
-| Folder listing, 1,200 entries | **2.2 ms** | 54.9 ms |
-| HTML page with the reload script | **0.54 ms** | 0.86 ms |
-| First response after start | **45 ms** | ~1.5 s |
-| Memory | **10 MB** | ~240 MB |
+| Folder listing, 1,200 entries | **2.0 ms** | ~48 ms |
+| HTML page with the reload script | **0.50 ms** | 0.7–1.5 ms |
+| First response after start | **44 ms** | ~1.4 s |
+| Memory | **11 MB** | ~230 MB |
 | Install | one binary under 3 MB | Node.js + packages |
 
 Static files cost the same for both; the difference is everything around them. It also does a few things live-server does not:

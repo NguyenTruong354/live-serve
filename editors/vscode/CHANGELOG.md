@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-10-20)
 
 - The server runs in the workspace folder, so relative paths in `liveServe.args` work: `["--cert", ".certs/localhost.pem", "--key", ".certs/localhost-key.pem"]`.
 - Packages for Linux on Arm and Windows on Arm. The Linux server is now a static binary, so it also runs over Remote-SSH on older distributions (Ubuntu 20.04, Debian 11, RHEL 8).
