@@ -1,0 +1,61 @@
+<!doctype html>
+<!--
+  Source of social-preview.png, the repository's social preview (1280x640). After editing, render it with:
+  msedge --headless --disable-gpu --hide-scrollbars --window-size=1280,640 --screenshot=social-preview.png social-preview.html
+  then upload the PNG under the repository's Settings > Social preview (GitHub does not read it from the repository).
+  Numbers: BENCHMARKS.md (listing speed, memory) and the release archives (binary size).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>live-serve social preview</title>
+<style>
+  html, body { margin: 0; width: 1280px; height: 640px; overflow: hidden; }
+  body {
+    background:
+      radial-gradient(ellipse 700px 420px at 0% 0%, rgba(31, 60, 120, 0.45), transparent 70%),
+      radial-gradient(ellipse 760px 380px at 100% 100%, rgba(120, 24, 40, 0.42), transparent 70%),
+      #0d1117;
+    color: #e6edf3;
+    font-family: "Segoe UI", system-ui, sans-serif;
+  }
+  .card { position: absolute; left: 96px; top: 112px; }
+  .title { display: flex; align-items: center; gap: 22px; }
+  .dot {
+    width: 26px; height: 26px; border-radius: 50%; background: #3fb950;
+    box-shadow: 0 0 0 10px rgba(63, 185, 80, 0.14), 0 0 28px rgba(63, 185, 80, 0.35);
+    margin-top: 6px;
+  }
+  h1 {
+    margin: 0; font: 700 100px/1 Consolas, "DejaVu Sans Mono", ui-monospace, monospace;
+    letter-spacing: 0; color: #e6edf3;
+  }
+  .lines { margin-top: 36px; font-size: 37px; line-height: 1.32; }
+  .lines .soft { color: #c9d1d9; }
+  .lines .strong { font-weight: 600; color: #ffffff; }
+  .pills { display: flex; gap: 16px; margin-top: 46px; }
+  .pill {
+    padding: 11px 22px; border: 1px solid #30363d; border-radius: 999px;
+    background: rgba(255, 255, 255, 0.03); font-size: 25px; color: #e6edf3;
+  }
+  .pill b { color: #3fb950; font-weight: 700; }
+  .cmd { margin-top: 50px; font: 400 24px "Cascadia Mono", Consolas, ui-monospace, monospace; color: #8b949e; }
+  .cmd span { color: #3fb950; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="title"><div class="dot"></div><h1>live-serve</h1></div>
+    <div class="lines">
+      <div class="soft">Save a file, the page reloads.</div>
+      <div class="strong">One ~3 MB binary. No Node.js.</div>
+    </div>
+    <div class="pills">
+      <div class="pill"><b>~24×</b> faster listings</div>
+      <div class="pill"><b>~22×</b> less memory</div>
+      <div class="pill">CLI · VS Code · Zed</div>
+    </div>
+    <div class="cmd"><span>$</span> brew install nguyentruong354/tap/live-serve</div>
+  </div>
+</body>
+</html>
