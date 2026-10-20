@@ -6,6 +6,14 @@ The server is [live-serve](https://github.com/NguyenTruong354/live-serve), a nat
 
 <img alt="Saving style.css swaps the stylesheet without a reload; saving index.html reloads the page" src="https://raw.githubusercontent.com/NguyenTruong354/live-serve/main/docs/images/demo.gif" width="800">
 
+## Install
+
+- **VS Code:** search the Extensions view for **live-serve-native**, or run `code --install-extension nguyentruong354.live-serve-native`.
+- **VSCodium, Cursor, Windsurf, Gitpod:** the same from [Open VSX](https://open-vsx.org/extension/nguyentruong354/live-serve-native).
+- **Offline:** download the `.vsix` for your platform from [Releases](https://github.com/NguyenTruong354/live-serve/releases) and use **Extensions → … → Install from VSIX…**.
+
+Until 0.4.0 the extension was `nguyentruong354.live-serve` on Open VSX. The VS Code Marketplace already has an extension named `live-serve`, so from 0.4.1 it is `live-serve-native` everywhere: uninstall the old one and install this.
+
 ## Use
 
 - **Go Live** in the status bar starts the server for the open folder and opens the browser. It then shows **Port: 5500**; click it to stop.

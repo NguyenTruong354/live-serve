@@ -220,7 +220,13 @@ Either way, the reload script connects over `wss://` by itself, and a plain `htt
 
 ## VS Code
 
-From the project folder, run:
+**The extension:** install **live-serve: Go Live without Node** (`nguyentruong354.live-serve-native`) from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=nguyentruong354.live-serve-native), from [Open VSX](https://open-vsx.org/extension/nguyentruong354/live-serve-native) for VSCodium, Cursor and Windsurf, or as the `.vsix` for your platform from [Releases](https://github.com/NguyenTruong354/live-serve/releases). It brings its own server binary, so nothing else needs installing. Click **Go Live** in the status bar; saving reloads the page, and saving CSS swaps it in place. Its settings are in [its README](editors/vscode/README.md).
+
+```
+code --install-extension nguyentruong354.live-serve-native
+```
+
+**Or a task**, with live-serve installed on its own. From the project folder, run:
 
 ```
 live-serve init vscode
