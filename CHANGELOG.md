@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2 (2026-10-20)
+
+- The VS Code extension is now `nguyentruong354.live-serve-rs`, on the VS Code Marketplace and Open VSX alike. The name `live-serve-native` can no longer be used on the Marketplace. Settings (`liveServe.*`), commands and the server are unchanged; on Open VSX, uninstall `nguyentruong354.live-serve-native` and install `live-serve-rs`.
+
 ## 0.4.1 (2026-10-20)
 
 - The VS Code extension is now `nguyentruong354.live-serve-native`, on the VS Code Marketplace and Open VSX alike. The Marketplace already has another extension named `live-serve`, and an extension's name must be unique there. Settings (`liveServe.*`), commands and the server are unchanged; on Open VSX, uninstall `nguyentruong354.live-serve` and install `live-serve-native`.

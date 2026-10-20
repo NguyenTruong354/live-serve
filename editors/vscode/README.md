@@ -8,11 +8,11 @@ The server is [live-serve](https://github.com/NguyenTruong354/live-serve), a nat
 
 ## Install
 
-- **VS Code:** search the Extensions view for **live-serve-native**, or run `code --install-extension nguyentruong354.live-serve-native`.
-- **VSCodium, Cursor, Windsurf, Gitpod:** the same from [Open VSX](https://open-vsx.org/extension/nguyentruong354/live-serve-native).
+- **VS Code:** search the Extensions view for **live-serve-rs**, or run `code --install-extension nguyentruong354.live-serve-rs`.
+- **VSCodium, Cursor, Windsurf, Gitpod:** the same from [Open VSX](https://open-vsx.org/extension/nguyentruong354/live-serve-rs).
 - **Offline:** download the `.vsix` for your platform from [Releases](https://github.com/NguyenTruong354/live-serve/releases) and use **Extensions → … → Install from VSIX…**.
 
-Until 0.4.0 the extension was `nguyentruong354.live-serve` on Open VSX. The VS Code Marketplace already has an extension named `live-serve`, so from 0.4.1 it is `live-serve-native` everywhere: uninstall the old one and install this.
+From 0.4.2 the extension is `nguyentruong354.live-serve-rs` everywhere. On Open VSX it was `nguyentruong354.live-serve` until 0.4.0 and `nguyentruong354.live-serve-native` in 0.4.1: uninstall the old one and install this.
 
 ## Use
 

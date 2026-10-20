@@ -113,7 +113,7 @@ async function step(name, fn) {
 }
 
 exports.run = async function run() {
-  const ext = vscode.extensions.getExtension('nguyentruong354.live-serve-native');
+  const ext = vscode.extensions.getExtension('nguyentruong354.live-serve-rs');
   assert.ok(ext, 'extension is installed');
   const api = await ext.activate();
   const opened = [];
