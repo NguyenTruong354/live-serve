@@ -582,8 +582,13 @@ impl Proxy {
 /// prints "open" and "message <text>", its fetches "fetch <status>" (plus " listing" for a
 /// directory listing) or "fetch failed".
 const BROWSER: &str = r#"const href = process.argv[2], url = new URL(href);
-globalThis.location = { protocol: url.protocol, host: url.host, href, reload() { console.log("reload"); process.exit(0); } };
-globalThis.document = { querySelectorAll: () => [] };
+globalThis.location = { protocol: url.protocol, host: url.host, origin: url.origin, href, reload() { console.log("reload"); process.exit(0); } };
+// The page's stylesheets, from the JSON list in argv[3]; the script swapping one prints "swap <its new href>".
+const links = JSON.parse(process.argv[3] || "[]").map((h) => {
+  let current = new URL(h, href).href;
+  return { get href() { return current; }, set href(v) { current = v; console.log("swap " + v); } };
+});
+globalThis.document = { querySelectorAll: () => links };
 const realFetch = fetch;
 globalThis.fetch = (...args) => realFetch(...args).then(
   (r) => { console.log("fetch " + r.status + (r.headers.get("x-live-serve") === "listing" ? " listing" : "")); return r; },
@@ -608,6 +613,11 @@ impl Page {
     /// Without Node.js 20.10+ this is None and the test passes with a SKIPPED note, except on CI (`CI` set),
     /// where it fails.
     async fn open(port: u16, path: &str, location_port: u16) -> Option<Page> {
+        Page::open_with_links(port, path, location_port, &[]).await
+    }
+
+    /// The same, for a page whose stylesheets are `links` (hrefs, relative to the page or absolute).
+    async fn open_with_links(port: u16, path: &str, location_port: u16, links: &[&str]) -> Option<Page> {
         let node = std::env::var("NODE").unwrap_or_else(|_| "node".into());
         let check = Command::new(&node)
             .args(["--experimental-websocket", "-e", "process.exit(typeof WebSocket === 'function' ? 0 : 1)"])
@@ -630,6 +640,7 @@ impl Page {
             .arg("--experimental-websocket")
             .arg(&file)
             .arg(format!("http://127.0.0.1:{location_port}{path}"))
+            .arg(serde_json::to_string(links).unwrap())
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
@@ -805,4 +816,24 @@ async fn a_listing_reloads_into_a_listing() {
     std::fs::write(root.join("docs").join("new.txt"), "n").unwrap();
     let lines = page.until("reload").await;
     assert_eq!(before_last(&lines), "fetch 200 listing", "{lines:?}");
+}
+
+#[tokio::test]
+async fn swaps_the_pages_own_stylesheets_only() {
+    let root = site("own-css");
+    let port = start(root.clone()).await;
+    let links = ["style.css", "https://cdn.example/bootstrap.min.css"];
+    let Some(mut page) = Page::open_with_links(port, "/", port, &links).await else { return };
+    page.until_token().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    std::fs::write(root.join("style.css"), "h1{color:red}").unwrap();
+    let lines = page.until_line("the page's stylesheet swapped", |l| l.starts_with("swap ")).await;
+    let swapped = lines.last().unwrap();
+    assert!(swapped.starts_with(&format!("swap http://127.0.0.1:{port}/style.css?_live=")), "{lines:?}");
+    // A CDN's stylesheet cannot have changed with a local file: left alone, not fetched again.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let later = page.printed();
+    assert!(!later.iter().any(|l| l.contains("cdn.example")), "{later:?}");
+    assert!(!later.iter().any(|l| l == "reload"), "a stylesheet change does not reload: {later:?}");
 }

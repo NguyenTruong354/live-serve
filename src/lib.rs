@@ -76,12 +76,14 @@ const POLL_INTERVAL: Duration = Duration::from_millis(300);
 ///   page is a listing itself, not with a listing (`X-Live-Serve: listing`): a build that has removed
 ///   index.html or answers 404 or 500 for a moment never replaces the page. Reload messages meanwhile
 ///   join the wait.
+/// - On "css" it swaps the page's own stylesheets only: one from another origin (a CDN, Google Fonts)
+///   cannot have changed with a local file, and fetching it again would only cost time.
 macro_rules! reload_script {
     ($listing:literal) => {
         concat!(
             r#"<script>(()=>{const L="#,
             $listing,
-            r#",u=(location.protocol==="https:"?"wss://":"ws://")+location.host+"/__live/ws";let id=null,waiting=false;const r=()=>{if(waiting)return;waiting=true;const t=()=>fetch(location.href,{cache:"no-store"}).then(s=>{if(!s.ok||!L&&s.headers.get("x-live-serve")==="listing")throw 0;location.reload()}).catch(()=>setTimeout(t,500));t()};const c=()=>{const w=new WebSocket(u);let first=true;w.onmessage=e=>{const d=e.data;if(d.startsWith("id:")){if(first&&id!==null&&d!==id)r();first=false;id=d}else if(d==="css"){for(const l of document.querySelectorAll('link[rel="stylesheet"]')){const h=new URL(l.href);h.searchParams.set("_live",Date.now());l.href=h.href}}else{r()}};w.onclose=()=>setTimeout(c,1000)};c()})();</script>"#
+            r#",u=(location.protocol==="https:"?"wss://":"ws://")+location.host+"/__live/ws";let id=null,waiting=false;const r=()=>{if(waiting)return;waiting=true;const t=()=>fetch(location.href,{cache:"no-store"}).then(s=>{if(!s.ok||!L&&s.headers.get("x-live-serve")==="listing")throw 0;location.reload()}).catch(()=>setTimeout(t,500));t()};const c=()=>{const w=new WebSocket(u);let first=true;w.onmessage=e=>{const d=e.data;if(d.startsWith("id:")){if(first&&id!==null&&d!==id)r();first=false;id=d}else if(d==="css"){for(const l of document.querySelectorAll('link[rel="stylesheet"]')){const h=new URL(l.href);if(h.origin!==location.origin)continue;h.searchParams.set("_live",Date.now());l.href=h.href}}else{r()}};w.onclose=()=>setTimeout(c,1000)};c()})();</script>"#
         )
     };
 }
