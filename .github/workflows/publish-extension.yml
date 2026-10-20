@@ -1,13 +1,19 @@
 name: Publish extension
 
 # Publishes the VS Code packages of a release that is already out (such as v0.4.0, from before the
-# release workflow did it) to Open VSX. Run it from Actions > Publish extension > Run workflow.
+# release workflow did it) to Open VSX, the VS Code Marketplace, or both. Run it from
+# Actions > Publish extension > Run workflow.
 on:
   workflow_dispatch:
     inputs:
       tag:
         description: Release tag whose .vsix files to publish, e.g. v0.4.0
         required: true
+      registry:
+        description: Where to publish
+        type: choice
+        options: [both, open-vsx, marketplace]
+        default: both
       dry_run:
         description: Only download and check the packages, publish nothing
         type: boolean
@@ -18,6 +24,7 @@ permissions:
 
 jobs:
   open-vsx:
+    if: inputs.registry != 'marketplace'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -25,10 +32,26 @@ jobs:
         with:
           node-version: 24
       # The tag goes in through the environment, never pasted into the script.
-      - run: bash .github/scripts/publish-open-vsx.sh "$TAG"
+      - run: bash .github/scripts/publish-extension.sh open-vsx "$TAG"
         env:
           TAG: ${{ inputs.tag }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           REQUIRE_TOKEN: "1"
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
+          GH_TOKEN: ${{ github.token }}
+
+  marketplace:
+    if: inputs.registry != 'open-vsx'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: bash .github/scripts/publish-extension.sh marketplace "$TAG"
+        env:
+          TAG: ${{ inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          REQUIRE_TOKEN: "1"
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
           GH_TOKEN: ${{ github.token }}
